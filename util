@@ -1,0 +1,955 @@
+#!/bin/env bash
+#--------------------------------------------
+set -Eeuo pipefail
+if [[ -n "${DEBUG:-}" ]]; then
+	set -x
+fi
+trap stack_trace ERR
+function stack_trace() {
+	echo -e "\nThe command '$BASH_COMMAND' triggerd a stacktrace:\nStack Trace:"
+	for ((i = 1; i < ${#FUNCNAME[@]}; i++)); do
+		echo "    ($i) ${FUNCNAME[$i]:-(top level)} ${BASH_SOURCE[$i]:-(no file)}:${BASH_LINENO[$((i - 1))]}"
+	done
+}
+error() { printf "\e[1;31m[ERROR]\e[0m %s\n" "${1:-error message missing}" && trap true ERR && return 1; }
+warning() { printf "\e[1;33m[WARNING]\e[0m %s\n" "$1" >&2; }
+success() { printf "\e[1;32m[SUCCESS]\e[0m %s\n" "$1" >&2; }
+info() { printf "\e[1;34m[INFO]\e[0m %s\n" "$1" >&2; }
+green() { if [[ -t 0 ]]; then printf "\e[1;32m%s\e[0m" "$1"; else printf "%s" "$1"; fi; }
+red() { if [[ -t 0 ]]; then printf "\e[1;31m%s\e[0m" "$1"; else printf "%s" "$1"; fi; }
+blue() { if [[ -t 0 ]]; then printf "\e[1;34m%s\e[0m" "$1"; else printf "%s" "$1"; fi; }
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+export SCRIPT_DIR
+#--------------------------------------------
+declare -A util_commands
+declare -A util_command_descriptions
+util:desc() {
+	if [[ ! "$1" == */ ]]; then
+		util_commands["$1"]="$1"
+	fi
+	util_command_descriptions["$1"]="$2"
+}
+declare -A util_aliases
+util:alias() {
+	util_aliases["$1"]+="|$2"
+	util_commands["$2"]="$1"
+}
+util:desc help "Show this help message"
+util:help() {
+	case "${1:-list}" in
+	*/)
+		printf "Group Commands for %s:\n" "$(green "${1}")"
+		for key in "${!util_command_descriptions[@]}"; do
+			if [[ "$key" == "${1}"?* ]]; then
+				local name_without_group="${key:${#1}}"
+				if [[ (! "$name_without_group" == */*) || "$name_without_group" =~ ^[a-zA-Z0-9]+/$ ]]; then
+					if [[ -v util_aliases[$key] ]]; then
+						printf "  %s: %s\n" "$(green "$key${util_aliases[$key]}")" "${util_command_descriptions[$key]}"
+					else
+						printf "  %s: %s\n" "$(green "$key")" "${util_command_descriptions[$key]}"
+					fi
+				fi
+			fi
+		done
+		;;
+	list)
+		echo "Usage: util [command]"
+		echo "Commands:"
+		for key in "${!util_command_descriptions[@]}"; do
+			if [[ (! "$key" == */*) || "$key" =~ ^[a-zA-Z0-9_.-]+/$ ]]; then
+				if [[ -v util_aliases[$key] ]]; then
+					printf "  %s: %s\n" "$(green "$key${util_aliases[$key]}")" "${util_command_descriptions[$key]}"
+				else
+					printf "  %s: %s\n" "$(green "$key")" "${util_command_descriptions[$key]}"
+				fi
+			fi
+		done
+		;;
+	*)
+		if [[ -v util_command_descriptions[$1] ]]; then
+			printf "Usage: util %s\n" "$(green "$1")"
+			if [[ -v util_aliases[$1] ]]; then
+				printf "Aliases: %s\n" "$(green "${util_aliases[$1]//|/ }")"
+			fi
+			printf "%s\n" "${util_command_descriptions[$1]}"
+		else
+			error "Unknown command: $1"
+		fi
+		;;
+	esac
+}
+
+###################################### Commands ##########################################
+util:desc notify "Send a notification"
+util:notify() {
+	local title="${1:-Title}"
+	local message="${2:-Message}"
+	if [[ -n "${DISPLAY:-}" ]] && command -v notify-send &>/dev/null; then
+		notify-send "$title" "$message"
+		return 0
+	fi
+	curl -X POST \
+		-H 'Content-Type: application/json' \
+		-d "$(jq -n '{chat_id: $chat_id, disable_notification: false, text: $text}' \
+			--arg chat_id "$(cfg store get telegram/tasadarBot/chatID)" \
+			--arg text "[${NODE_NAME:-NODE_UNKNOWN}]"$'\n'"$title"$'\n'"$message")" \
+		"https://api.telegram.org/bot$(cfg store get telegram/tasadarBot/token)/sendMessage"
+}
+
+
+# shellcheck disable=SC2016
+util__jq_urlparse='def urldecode:
+  # urldecode courtesy of: https://gist.github.com/jcracknell/52cf4e0f8c4518a853784638db8a258d
+  def unhex:
+    if 48 <= . and . <= 57 then . - 48 elif 65 <= . and . <= 70 then . - 55 else . - 87 end;
+  def bytes:
+    def loop($i):
+      if $i >= length then empty else 16 * (.[$i+1] | unhex) + (.[$i+2] | unhex), loop($i+3) end;
+    [loop(0)];
+  def codepoints:
+    def loop($i):
+      if $i >= length then empty
+      elif .[$i] >= 240 then (.[$i+3]-128) + 64*(.[$i+2]-128) + 4096*(.[$i+1]-128) + 262144*(.[$i]-240), loop($i+4)
+      elif .[$i] >= 224 then (.[$i+2]-128) + 64*(.[$i+1]-128) + 4096*(.[$i]-224), loop($i+3)
+      elif .[$i] >= 192 then (.[$i+1]-128) + 64*(.[$i]-192), loop($i+2)
+      else .[$i], loop($i+1) end;
+    [loop(0)];
+  gsub("(?<m>(?:%[0-9a-fa-f]{2})+)"; .m | explode | bytes | codepoints | implode);
+
+def urlparse:
+  # urlparse courtesy of: https://github.com/stedolan/jq/issues/537
+  # delete nulls courtesy of: https://github.com/stedolan/jq/issues/104
+  capture("^((?<scheme>[^:/?#]+):)?(//(?<authority>(?<domain>[^/?#:]*)(:(?<port>[0-9]*))?))?(?<path>[^?#]*)?([?](?<query>[^#]*))?(#(?<fragment>.*))?")
+    | if .query
+      then .query |= ((split("&") | .[] |= (split("=") | if (.|length) > 1
+                                                         then {(.[0]): .[1] | urldecode}
+                                                         else {(.[0]): ""} end)) | add)
+      else . end
+    | del(.[] | nulls);'
+
+util:desc url/ "URL utilities"
+util:desc url/parse "Parse a URL"
+util:url/parse(){
+  local URI output
+  output="json"
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        echo "Usage: url parse [options] <URI>"
+        echo "Options:"
+        echo "  -f, --format <format>  Output format (default: json)"
+        echo "               Available formats: json, bash, sh"
+        return 0
+        ;;
+      -f|--format)
+        output="$2"
+        shift
+        ;;
+      *)
+        URI="$1"
+        ;;
+    esac
+    shift
+  done
+  parsed="$(echo "$URI" | jq -R "$util__jq_urlparse"urlparse)"
+  case "$output" in
+    json)
+      echo "$parsed"
+      ;;
+    bash|sh)
+      scheme="$(echo "$parsed" | jq -r '.scheme')"
+      authority="$(echo "$parsed" | jq -r '.authority')"
+      domain="$(echo "$parsed" | jq -r '.domain')"
+      port="$(echo "$parsed" | jq -r '.port')"
+      path="$(echo "$parsed" | jq -r '.path')"
+      declare -A query
+      while IFS= read -r -d '' key; do
+        value="$(echo "$parsed" | jq -r ".query[\"$key\"]")"
+        query["$key"]="$value"
+      done < <(echo "$parsed" | jq -r '.query | keys[]' | tr '\n' '\0')
+      fragment="$(echo "$parsed" | jq -r '.fragment')"
+      case "$output" in
+        bash)
+          echo "scheme=\"$scheme\""
+          echo "authority=\"$authority\""
+          echo "domain=\"$domain\""
+          echo "port=\"$port\""
+          echo "path=\"$path\""
+          for key in "${!query[@]}"; do
+            echo "query[\"$key\"]=\"${query[$key]}\""
+          done
+          echo "fragment=\"$fragment\""
+          ;;
+        sh)
+          echo "export scheme=\"$scheme\""
+          echo "export authority=\"$authority\""
+          echo "export domain=\"$domain\""
+          echo "export port=\"$port\""
+          echo "export path=\"$path\""
+          for key in "${!query[@]}"; do
+            echo "export query_$key=\"${query[$key]}\""
+          done
+          echo "export fragment=\"$fragment\""
+          ;;
+      esac;;
+    *)
+      error "Unknown output format: $output"
+      ;;
+  esac
+}
+
+util__web_host_index_page='<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Web Utils</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+  </head>
+  <body>
+    <h1>Web Utils</h1>
+  </body>
+</html>'
+# TODO: Add more utilities to the index page (e.g. file upload for pdf shrinking and qr code generator)
+
+util:web/host/landing_page(){
+	info "Starting web host landing page"
+	while true; do
+		printf "%s" "$util__web_host_index_page" | curl -v -X POST --data @- -H "Content-Type: text/html" "$base_url"
+	done
+}
+
+util:desc web/ "General web utilities"
+util:desc web/host "Host a web version of some utilities using patchwork server"
+util:web/host(){
+	base_url="${1:-https://patch.tionis.dev/req/$(uuidgen)}"
+	info "Hosting web utilities at $base_url"
+	util:web/host/landing_page &
+	wait
+}
+
+util:desc web/mirror "Mirror a website"
+util:web/mirror() {
+	for url in "$@"; do
+		echo "$url" >>started-urls.txt
+		if wget --mirror --convert-links --adjust-extension --page-requisites --no-parent "$url"; then
+			echo "$url" >>failed-urls.txt
+			warning "Failed to mirror $url"
+		else
+			echo "$url" >>finished-urls.txt
+			success "Finished mirroring $url"
+		fi
+	done
+}
+
+util:desc web/itty-bitty/generate "Generate an itty.bitty link"
+util:web/itty-bitty/generate() {
+	printf "%s" "$@" | lzma -9 | base64 -w0 | xargs -0 printf "https://itty.bitty.site/#/%s\n"
+}
+
+util:desc web/wait "Wait for a web ressource to be available"
+util:web/wait() {
+	local interval=1
+	local timeout=10
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		help)
+			echo "Usage: util web/wait [optionis] <url>"
+			echo "Wait for a web ressource to be available"
+			echo "Options:"
+			echo "  -t, --timeout <seconds>: Timeout in seconds"
+			echo "  -i, --interval <seconds>: Interval in seconds"
+			return 0
+			;;
+		-t | --timeout)
+			timeout="$2"
+			shift
+			;;
+		-i | --interval)
+			interval="$2"
+			shift
+			;;
+		*)
+			local url="$1"
+			;;
+		esac
+		shift
+	done
+	local start_time
+	start_time="$(date +%s)"
+	while ! curl -s -o /dev/null -w "%{http_code}" "$url" | grep -q 200; do
+		if [[ $(($(date +%s) - start_time)) -gt $timeout ]]; then
+			error "Timeout waiting for $url"
+		fi
+		sleep "$interval"
+	done
+	success "Resource $url is available"
+	notify "Resource $url is available"
+}
+
+util:desc audio/ "Audio utilities"
+util:desc audio/init-virtual-audio-cable "Initialize a virtual audio cable"
+util:audio/init-virtual-audio-cable() {
+	pacmd load-module module-null-sink sink_name=Virtual_Sink sink_properties=device.description=Virtual_Sink
+	pactl load-module module-remap-source master=Virtual_Sink.monitor source_name=virt_mic source_properties=device.description=VirtualMic
+}
+
+util:desc fun/ "Fun utilities"
+util:desc fun/time/ "Time utilities"
+util:desc fun/time/beats "Get the current time in beats"
+util:fun/time/beats() {
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		-h | --help)
+			echo "Usage: util fun/time/beats [options]"
+			echo "Get the current time in beats"
+			echo "Options:"
+			echo "  -h, --help: Show this help message"
+			echo "  -u, --utc: Use UTC instead of UTC+1"
+			return 0
+			;;
+		-u | --utc)
+			USE_UTC=1
+			;;
+		esac
+		shift
+	done
+	# time is based on UTC+1
+	# \frac{3600 \cdot h + 60 \cdot m + s}{86.4}
+	local time
+	time="$(date -u +%H:%M:%S)"
+	local h m s
+	IFS=: read -r h m s <<<"$time"
+	if [[ -z "${USE_UTC:-}" ]]; then
+		h="$(("$h" + 1))"
+	fi
+	local beats
+	beats="$(bc -l <<<"scale=2; ($((10#$h * 3600)) + $((10#$m * 60)) + $((10#$s))) / 86.4")"
+	echo "@$beats"
+}
+util:desc fun/play-song "Play a song"
+util:fun/play-song() {
+	cd /tmp || exit 1
+	echo 'g(i,x,t,o){return((3&x&(i*((3&i>>16?"BY}6YB6$":"Qj}6jQ6%")[t%8]+51)>>o))<<4);};main(i,n,s){for(i=0;;i++)putchar(g(i,1,n=i>>14,12)+g(i,s=i>>17,n^i>>13,10)+g(i,s/3,n+((i>>11)%3),10)+g(i,s/5,8+n-((i>>10)%3),9));}' |
+		gcc -xc - && ./a.out | aplay
+}
+
+util:desc fun/itty-bitty "Generate an itty.bitty link"
+util:fun/itty-bitty() {
+	printf "%s" "$@" | lzma -9 | base64 -w0 | xargs -0 printf "https://itty.bitty.site/#/%s\n"
+}
+
+util:desc qr/ "QR Code utilities"
+util:desc qr/wifi "Generate a QR code for a wifi network"
+util:qr/wifi() {
+	local ssid="$1"
+	local password="$2"
+	local security="${3:-WPA}"
+	local qr_code="WIFI:S:${ssid};T:${security};P:${password};;"
+	qrencode -t ANSIUTF8i "$qr_code"
+}
+
+util:desc keyboard:eu "Set the keyboard layout to eu"
+util:keyboard:eu() {
+	# todo set /etc/default/keyboard if possible
+	setxkbmap eu
+	#sudo localectl set-keymap --no-convert euro
+}
+
+util:desc deno/ "Deno utilities"
+util:desc deno/repl "Start a deno repl"
+util:deno/repl() {
+	deno repl "--eval-file=$HOME/.config/deno/profile.js" --allow-all "$@"
+}
+
+util:desc tags/ "Tag utilities"
+util:desc tags/grep "Grep for tags in a filename"
+util:tags/grep() {
+	local tags=()
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		-h | --help)
+			echo "Usage: util tags/grep [options] <list of tags>"
+			echo "Grep for tags in a filename"
+			echo "Options:"
+			echo "  -h, --help: Show this help message"
+			return 0
+			;;
+		*)
+			tags+=("$1")
+			;;
+		esac
+		shift
+	done
+	REGEX="^"
+	for tag in "${tags[@]}"; do
+		ESCAPED_TAG=$(echo "$tag" | sed 's/[^^]/[&]/g; s/\^/\\^/g')
+		REGEX="$REGEX(?=.*\\[([A-Za-z0-9_-]*,)*$ESCAPED_TAG(,[A-Za-z0-9_-]*)*\\]\\..*)"
+	done
+	grep -P "$REGEX"
+}
+
+util:desc file/ "File utilities"
+util:desc file/rm-broken-symlinks "Remove broken symlinks"
+util:file/rm-broken-symlinks() {
+	#find . -type l ! -exec test -e {} \; -delete
+	#find . -xtype l 2>/dev/null -exec rm {} \;
+	is_gnu() {
+		test "$(find . --version | grep -c 'GNU')" -gt 0
+	}
+	if is_gnu; then
+		find . -xtype l -delete
+	else
+		echo "detected non-gnu find, falling back to slower method..."
+		if command -v 'zsh'; then
+			echo "Using zsh..."
+			zsh -c 'rm -- **/*(-@D)'
+		else
+			echo "Using find + sh..."
+			find . -type l -exec sh -c 'for x; do [ -e "$x" ] || rm "$x"; done' _ {} +
+		fi
+	fi
+}
+
+util:desc lofi "Listen to lofi stream"
+util:lofi() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		-h | --help)
+			echo "Usage: lofi [OPTIONS]"
+			echo "Play lofi music from youtube"
+			echo "Options:"
+			echo "  -h, --help    Show this help message and exit"
+			echo "  -b, --browser Open in browser"
+			return 0
+			;;
+		-b | --browser)
+			USE_BROWSER=true
+			;;
+		*)
+			error "Invalid option $1"
+			;;
+		esac
+		shift
+	done
+	if [[ -n "${USE_BROWSER:-}" ]]; then
+		open "https://www.youtube.com/watch?v=jfKfPfyJRdk"
+	else
+		mpv --no-video "https://www.youtube.com/watch?v=jfKfPfyJRdk"
+	fi
+}
+
+util:desc list/ "List utilities"
+util:desc list/select-random "Select a random element from a list"
+util:list/select-random() {
+	tput sc
+	sort -R | xargs -I {} sh -c "tput el1; tput rc; printf '{}'; sleep 0.05" && echo
+}
+
+util:desc ls/ "ls utilities"
+util:desc ls/modified-today "List files modified today"
+util:ls/modified-today() {
+	find "${1:-.}" -maxdepth 1 -newermt "$(date -u +"%Y-%m-%d")" -type f
+	#find "${1:-.}" -type f -mtime -1
+}
+
+util:desc ssh/ "SSH utilities"
+util:desc ssh/fix-permissions "Fix SSH permissions"
+util:ssh/fix-permissions() {
+	find ~/.ssh -type f -exec chmod 600 {} \;
+	find ~/.ssh -type d -exec chmod 700 {} \;
+}
+
+util:desc stopwatch "A simple stopwatch"
+util:stopwatch() {
+	secondtodate() {
+		date -u --date "@$1" +%H:%M:%S
+	}
+
+	date0=0
+	date1="$(date +%s)"
+	totaltime=0
+	paused=1
+
+	# print keys
+	echo "[space]: start/pause, [tab]: lap, [esc]: quit"
+	echo
+
+	while true; do
+		# calculate new time
+		[[ $paused -eq 1 ]] && date2="$(("$(date +%s)" - "$date1" + "$date0"))"
+
+		# print time
+		echo -ne "\r$(secondtodate $((totaltime + date2)))"
+		[[ $totaltime -gt 0 ]] && echo -ne "\t$(secondtodate "$date2")"
+
+		read -r -s -n 1 -t 0.1
+		if [[ $REPLY = $'\x1b' ]]; then
+			echo
+			break
+		elif [[ $REPLY = $'\x9' ]] && [[ $paused -eq 1 ]]; then
+			totaltime=$((totaltime + date2))
+			date1="$(date +%s)"
+			date0=0
+			echo -e
+		elif [[ $REPLY = $'\x20' ]]; then
+			if [[ $paused -eq 0 ]]; then
+				date1="$(date +%s)"
+				paused=1
+			else
+				paused=0
+				date0=$date2
+			fi
+		fi
+	done
+}
+
+util:desc colors/ "Color utilities"
+util:desc colors/table "Print all terminal colors in a table"
+util:colors/table() {
+	# Function to print a color block
+	out() {
+		local n=$1
+		tput setab "$n"    # Set background color using ANSI escape
+		printf "% 4d" "$n" # Print the color number with padding
+		tput setab 0       # Reset background to default
+	}
+
+	# Normal colors 1 - 16
+	tput setaf 16 # Set foreground color to make it more visible against background
+	for n in {0..7}; do
+		out "$n"
+	done
+	echo
+
+	for n in {8..15}; do
+		out "$n"
+	done
+
+	echo
+	echo
+
+	# Extended colors from 16 to 231
+	y=16
+	while [ "$y" -lt 231 ]; do
+		for _ in {0..5}; do
+			out "$y"
+			y=$((y + 1))
+		done
+		echo
+	done
+
+	echo
+
+	# Grayscale colors from 232 to 255
+	for n in {232..255}; do
+		out "$n"
+		if [ "$n" -eq 237 ] || [ "$n" -eq 243 ] || [ "$n" -eq 249 ]; then
+			echo
+		fi
+	done
+
+	echo
+	tput setaf 7 # Reset foreground color
+	tput setab 0 # Reset background color
+}
+util:desc colors/list "Print all terminal colors in a list"
+util:colors/list() {
+	for i in {0..255}; do
+		printf "\x1b[38;5;%smcolour%s\x1b[0m\n" "${i}" "${i}"
+	done
+}
+
+util:desc fun/simple-dice "Roll a simple dice"
+util:fun/simple-dice() {
+	# Function to generate a random number between 1 and 6 (representing a six-sided dice)
+	function roll_dice() {
+		echo $((1 + RANDOM % ${1:-6}))
+	}
+
+	# Function to simulate the rolling animation
+	function roll_animation() {
+		local duration=$1
+		local sides=6
+		local start_time
+		start_time=$(date +%s)
+		local current_time=$start_time
+		local sleep_time
+		sleep_time="$(roll_dice 20 | awk '{print $1*0.001}')"
+		local slowdown_factor="1.01"
+		local slowdown_factor_slowdown_factor="1.01"
+
+		while ((current_time - start_time < duration)); do
+			echo -n -e "\r[$(roll_dice "$sides")]"
+			sleep_time="$(echo "$sleep_time * 1.1" | bc)"
+			slowdown_factor="$(echo "$slowdown_factor" "$slowdown_factor_slowdown_factor" | awk '{print $1*$2}')"
+			sleep_time="$(echo "$sleep_time" "$slowdown_factor" | awk '{print $1*$2}')"
+			#echo "$sleep_time"
+			sleep "$sleep_time"
+			current_time=$(date +%s)
+		done
+		echo " <---"
+		#echo -e "\r-->[$(roll_dice)]<--"
+	}
+
+	# Roll the dice with a rolling animation for 3 seconds
+	roll_animation "${1:-5}"
+}
+
+util:desc headlines "Get the latest hackernews headlines"
+util:headlines() {
+	#curl -s "https://hacker-news.firebaseio.com/v0/topstories.json" | jq -r '.[0:5] | .[]' | xargs -I {} curl -s "https://hacker-news.firebaseio.com/v0/item/{}.json" | jq -r '.title'
+	#  <img src="https://developer.run/pic/headlines.png"/>
+	#
+	#  Description
+	#  -----------
+	#  * Prints ground shaking headlines from Hacker News in shell greeting
+	#  * Don't miss next Meltdown, be notified right away!
+	#  * Doesn't distract you if nothing important happened
+	#  * Allows open all news in browser and mark it as read
+	#  * If you prefer simpler version without additional functionality refer [to initial version](https://github.com/dmi3/bin/blob/2fb9f8a894ea4eba5edb13c7135861740de83084/headlines.sh)
+	#  * See <http://developer.run/27> for description and more ideas
+
+	#  Author: [Dmitry](http://dmi3.net) [Source](https://github.com/dmi3/bin)
+
+	#  Requirements
+	#  ------------
+	#      sudo apt-get install jq
+
+	#  Usage
+	#  ------------
+
+	#  * `headlines.sh` will print latest headlines
+	#  * `headlines.sh read` will open all news in browser and mark it as read (hide)
+	#    - `~/.readnews` stores titles and urls of read news
+	#    - `~/.readnews` might be useful if you want to find article later
+	#    - `~/.readnews` might be synced between computers
+	#  * `headlines.sh clear` will mark all news as read (hide)
+	#  * Add to shell greeting [see screenshot](https://developer.run/pic/headlines.png)
+	#    - <https://ownyourbits.com/2017/04/05/customize-your-motd-login-message-in-debian-and-ubuntu/>
+	#    - OR `chmod 777 /var/run/motd.dynamic` on boot and `headlines.sh > /var/run/motd.dynamic`
+	#    - OR `chmod 777 /var/run/motd.dynamic` on boot and put `0 */2 * * * /path/to/headlines.sh > /var/run/motd.dynamic` to `crontab -e`
+	#    - To read and update greeting use `headlines.sh read > /var/run/motd.dynamic && clear`
+
+	if test -n "${1:-}" && test "$1" == "help" || test "${1:-}" == "--help"; then
+		echo "Prints ground shaking headlines from Hacker News"
+		echo "The script is modified by commands and environment variables"
+		echo "Supported commands:"
+		echo "- help - this message"
+		echo "- read - open headline links in browser"
+		echo "- clear - mark all news as read"
+		echo "Supported environment variables:"
+		echo "- WHEN - Start Date of Headline search in a by date undestandable format, defaults to \"5 days ago\""
+		echo "- MAX - The maxiumum number of headlines shown, defaults to 3"
+		echo "- THRESHOLD - the amount of points a post must have to be considered a headline, defaults to 1000"
+		exit 0
+	fi
+
+	if test -z "${WHEN:-}"; then
+		WHEN="7 days ago"
+	fi
+	SINCE=$(date --date="$WHEN" +%s)
+	if test -z "${MAX:-}"; then
+		MAX=3
+	fi
+	if test -z "${THRESHOLD:-}"; then
+		THRESHOLD=1000
+	fi
+
+	NEWS=$(curl -s "https://hn.algolia.com/api/v1/search_by_date?numericFilters=points>$THRESHOLD,created_at_i>$SINCE&hitsPerPage=$MAX")
+	touch ~/.readnews
+
+	if test "${1:-}" == "read"; then
+		echo "$NEWS" | jq -r '.hits[].url' | grep -vFf ~/.readnews | xargs -L 1 -P "$MAX" xdg-open >/dev/null 2>&1 &
+	fi
+
+	if test "${1:-}" == "read" || test "${1:-}" == "clear"; then
+		tmpfile="$(mktemp)"
+		echo "$NEWS" | jq -r '.hits[] | (.title +"\n" + .url)' | grep -vFf ~/.readnews >"$tmpfile"
+		mv "$tmpfile" ~/.readnews
+	fi
+
+	echo "THE HEADLINES $(date '+%Y/%m/%d %H:%S')"
+	echo "$NEWS" | jq -r "if .nbHits == 0 then \"No news is good news\" else .hits[].title end" | grep -vFf ~/.readnews || echo "All read"
+}
+
+util:desc extract "Extract an archive based on it's extension"
+util:extract() {
+	if [ -f "$1" ]; then
+		case "$1" in
+		*.tar.bz2) tar xvjf "$1" ;;
+		*.tar.gz) tar xvzf "$1" ;;
+		*.bz2) bunzip2 "$1" ;;
+		*.rar) unrar x "$1" ;;
+		*.gz) gunzip "$1" ;;
+		*.tar) tar xvf "$1" ;;
+		*.tbz2) tar xvjf "$1" ;;
+		*.tgz) tar xvzf "$1" ;;
+		*.zip) unzip "$1" ;;
+		*.Z) uncompress "$1" ;;
+		*.7z) 7z x "$1" ;;
+		*.exe) cabextract "$1" ;;
+		*) echo "'$1' cannot be extracted via extract()" ;;
+		esac
+	else
+		echo "'$1' is not a valid file"
+	fi
+}
+
+util:desc generate/ "Generation utilities"
+util:desc generate/password "Generate a random password"
+util:generate/password() {
+	tr -dc 'a-zA-Z0-9' </dev/urandom | fold -w "${1:-16}" | head -n 1
+}
+util:desc generate/uuid "Generate a UUID"
+util:generate/uuid() {
+	if command -v uuidgen &>/dev/null; then
+		uuidgen
+	else
+		cat /proc/sys/kernel/random/uuid
+	fi
+}
+util:desc generate/name "Generate a random name"
+util:generate/name() {
+	#curl -s "https://uinames.com/api/?ext" | jq -r '.name'
+	curl -L https://www.pseudorandom.name
+}
+
+util:desc sk/ "sk related utilities"
+util:desc sk/search "search in files using rg and sk as UI"
+util:sk/search() {
+	sk --ansi -i -c 'rg --color=always --line-number "{}" .'
+}
+
+util:desc info/ "Information utilities"
+util:desc info/latest-linux-kernel "Get the latest linux kernel version"
+util:info/latest-linux-kernel() {
+	#curl -s https://www.kernel.org/finger_banner | grep -oP '(?<=The latest stable version of the Linux kernel is:) +[0-9.]+' | grep -oP '[0-9.]+'
+	wget -qO - https://raw.githubusercontent.com/torvalds/linux/master/Makefile 2>/dev/null | head -n5 | grep -E ' = [0-9]{1,}' | cut -d' ' -f3 | tr '\n' '.' | sed -e 's/\.$//'
+}
+
+util:desc iso/ "ISO utilities"
+util:desc iso/burn "Burn an ISO to a USB drive"
+util:iso/burn() {
+	if ! test -e "$1"; then
+		echo "iso file does not exist or was not specified!"
+		exit 1
+	fi
+	if ! test -e "$2"; then
+		echo "device file does not exist or was not specified!"
+		exit 1
+	fi
+	echo "Following iso will be burned:"
+	echo "$1"
+	echo
+	echo "Following device will be overwritten:"
+	lsblk "$2"
+	echo
+	echo "Are you sure? [y/N]"
+	read -r option
+	case $option in
+	y | Y | yes | Yes)
+		echo "Starting process using dd..."
+		sudo dd "if=$1" "of=$2" bs=1024k status=progress
+		;;
+	*)
+		echo "Aborting..."
+		;;
+	esac
+}
+
+util:desc date/iso "Get the current date in ISO format"
+util:date/iso() {
+	date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+util:desc email/ "Email utilities"
+util:desc email/hash "Hash a website into an email address"
+util:email/hash() {
+	declare output
+	output="$(echo "$(cfg store get util/email_hash/salt)|$1" | sha256sum)"
+	echo "${output:0:16}@tionis.dev"
+	#echo -n "$1" | md5sum | awk '{print substr($1, 0, 32)}' | xxd -r -p | base64 | awk '{print substr($1, 0, 32)}' | tr -d '=' | awk '{print tolower($1)}'
+}
+
+util:desc diff/ "Diff utilities"
+util:desc diff/side-by-side "Diff two files side by side"
+util:diff/side-by-side() {
+	shopt -s checkwinsize
+	if ! test -e "$1"; then
+		echo "First argument not a file!"
+		exit 1
+	fi
+	if ! test -e "$2"; then
+		echo "Second argument not a file!"
+		exit 1
+	fi
+	#diff --width="$COLUMNS" --suppress-common-lines --color=always --side-by-side "$1" "$2"
+	diff --width="$COLUMNS" --color=always --side-by-side "$1" "$2"
+}
+
+util:desc pdf/ "PDF utilities"
+util:desc pdf/shrink "Shrink a PDF file"
+util:pdf/shrink() {
+	declare IFILE OFILE res
+	shrink() {
+		gs \
+			-q -dNOPAUSE -dBATCH -dSAFER \
+			-sDEVICE=pdfwrite \
+			-dCompatibilityLevel=1.3 \
+			-dPDFSETTINGS=/screen \
+			-dEmbedAllFonts=true \
+			-dSubsetFonts=true \
+			-dAutoRotatePages=/None \
+			-dColorImageDownsampleType=/Bicubic \
+			-dColorImageResolution="$3" \
+			-dGrayImageDownsampleType=/Bicubic \
+			-dGrayImageResolution="$3" \
+			-dMonoImageDownsampleType=/Bicubic \
+			-dMonoImageResolution="$3" \
+			-sOutputFile="$2" \
+			"$1"
+	}
+
+	check_smaller() {
+		# If $1 and $2 are regular files, we can compare file sizes to
+		# see if we succeeded in shrinking. If not, we copy $1 over $2:
+		if [ ! -f "$1" ] || [ ! -f "$2" ]; then
+			return 0
+		fi
+		ISIZE="$(wc -c "$1" | cut -f1 -d\ )"
+		OSIZE="$(wc -c "$2" | cut -f1 -d\ )"
+		if [ "$ISIZE" -lt "$OSIZE" ]; then
+			echo "Input smaller than output, doing straight copy" >&2
+			cp "$1" "$2"
+		fi
+	}
+
+	IFILE="$1"
+	# Need an input file:
+	if [ -z "$IFILE" ]; then
+		echo "Reduces PDF filesize by lossy recompressing with Ghostscript."
+		echo "Not guaranteed to succeed, but usually works."
+		echo "  Usage: $0 infile [outfile] [resolution_in_dpi]"
+		return 1
+	fi
+	# Output filename defaults to "-" (stdout) unless given:
+	if test -n "$2"; then
+		OFILE="$2"
+	else
+		OFILE="-"
+	fi
+	# Output resolution defaults to 72 unless given:
+	if [[ -n "${3:-}" ]]; then
+		res="$3"
+	else
+		res="72"
+	fi
+	shrink "$IFILE" "$OFILE" "$res" || return $?
+	check_smaller "$IFILE" "$OFILE"
+}
+
+util:desc find/ "Find utilities"
+util:desc find/modified-today "Find files modified today"
+util:find/modified-today() {
+	find "${1:-.}" -maxdepth 1 -newermt "$(date -u +"%Y-%m-%d")" -type f
+}
+util:desc find/empty-dirs "Find empty directories"
+util:find/empty-dirs() {
+	find "${1:-.}" -type d -empty
+}
+
+util:desc curl/ "Curl utilities"
+util:desc curl/with-timings "Curl with timings"
+util:curl/with-timings() {
+	curl -L -w "time_namelookup: %{time_namelookup}\ntime_connect: %{time_connect}\ntime_appconnect: %{time_appconnect}\ntime_pretransfer: %{time_pretransfer}\ntime_redirect: %{time_redirect}\ntime_starttransfer: %{time_starttransfer}\ntime_total: %{time_total}\n" "$@"
+}
+
+util__cachedir_tag_content='Signature: 8a477f597d28d172789f06886806bc55
+# This file is a cache directory tag created by (application name).
+# For information about cache directory tags, see:
+#	https://bford.info/cachedir/'
+
+util:desc cachedir.tag "Print the content of a CACHEDIR.TAG file"
+util:cachedir.tag() {
+	echo "$util__cachedir_tag_content"
+}
+
+util:desc fs/ "Filesystem utilities"
+util:desc fs/find-illegal "Find illegal characters in filenames (illegal for FAT/Windows)"
+util:fs/find-illegal() {
+	find . -name '*[][<>:"\\|?*]*'
+	# Android doesn't like dirs ending in .
+	find . -mindepth 1 -type d -regextype posix-extended -regex '.*\.$'
+}
+util:desc fs/fix-illegal "Fix illegal characters in filenames (illegal for FAT/Windows)"
+util:fs/fix-illegal() {
+  while IFS=$'\n' read -r file; do
+		new="${file//[:?*\"\\]/ }"
+		new="${new//</\(}"
+		new="${new//>/\)}"
+		new="${new//|/#}"
+		new="${new//\[/\(}"
+		new="${new//\]/\)}"
+		mv "$file" "$new"
+	done < <(find . -name '*[][<>:"\\|?*]*')
+	while IFS=$'\n' read -r file; do
+		reversed="$(rev <<<"$file")"
+		for ((i = 0; i < ${#reversed}; i++)); do
+			if [[ "${reversed:$i:1}" != "." ]]; then
+				break
+			fi
+		done
+		new="${file:0:${#file} - i}"
+		mv "$file" "$new"
+	done < <(find . -mindepth 1 -type d -regextype posix-extended -regex '.*\.$')
+}
+
+
+
+util:desc urlencode "URL encode a string"
+util:urlencode(){
+  string=$1; format=; set --
+  while
+    literal=${string%%[!-._~0-9A-Za-z]*}
+    case "$literal" in
+      ?*)
+        format=$format%s
+        set -- "$@" "$literal"
+        string=${string#"$literal"};;
+    esac
+    case "$string" in
+      "") false;;
+    esac
+  do
+    tail=${string#?}
+    head=${string%"$tail"}
+    format=$format%%%02x
+    set -- "$@" "'$head"
+    string=$tail
+  done
+  # shellcheck disable=SC2059
+  printf "$format\\n" "$@"
+}
+
+######################################### Main #############################################
+util:main() {
+	if [[ "$(basename "$0")" = "util" ]]; then
+		command="${1:-help}"
+	else
+		command="$(basename "$0")"
+	fi
+	shift || true
+
+	if [[ "$command" == */ ]]; then
+		util:help "$command" "$@"
+	elif [[ -v util_commands[$command] ]]; then
+		"util:${util_commands[$command]}" "$@"
+	else
+		error "Unknown command: $command"
+	fi
+}
+if [[ $- != *i* ]]; then
+	util:main "$@"
+fi

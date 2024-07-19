@@ -1,0 +1,879 @@
+#!/bin/env bash
+#--------------------------------------------
+set -Eeuo pipefail
+if [[ -n "${DEBUG:-}" ]]; then
+  set -x
+fi
+trap stack_trace ERR
+function stack_trace() {
+  echo -e "\nThe command '$BASH_COMMAND' triggerd a stacktrace:\nStack Trace:"
+  for (( i = 1; i < ${#FUNCNAME[@]}; i++ )); do
+  echo "    ($i) ${FUNCNAME[$i]:-(top level)} ${BASH_SOURCE[$i]:-(no file)}:${BASH_LINENO[$(( i - 1 ))]}"
+  done
+}
+error(){ printf "\e[1;31m[ERROR]\e[0m %s\n" "${1:-error message missing}" && trap true ERR && return 1; }
+warning(){ printf "\e[1;33m[WARNING]\e[0m %s\n" "$1" >&2; }
+success(){ printf "\e[1;32m[SUCCESS]\e[0m %s\n" "$1" >&2; }
+info(){ printf "\e[1;34m[INFO]\e[0m %s\n" "$1" >&2; }
+green(){ if [[ -t 0 ]]; then printf "\e[1;32m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+red(){ if [[ -t 0 ]]; then printf "\e[1;31m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+blue(){ if [[ -t 0 ]]; then printf "\e[1;34m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+export SCRIPT_DIR
+#--------------------------------------------\
+# TODO start using mo (the mustache templating engine) to generate the templates
+declare -A templates_commands
+declare -A templates_command_descriptions
+templates:desc(){
+  templates_commands["$1"]="$1"
+  templates_command_descriptions["$1"]="$2"
+}
+declare -A templates_aliases
+templates:alias(){
+  templates_aliases["$1"]+="|$2"
+  templates_commands["$2"]="$1"
+}
+templates_list=()
+
+templates:desc help "Show this help message"
+templates:help(){
+  echo "Usage: templates [command]"
+  echo "Commands:"
+  for key in "${!templates_command_descriptions[@]}"; do
+    if [[ -v templates_aliases[$key] ]]; then
+      printf "  %s: %s\n" "$(green "$key${templates_aliases[$key]}")" "${templates_command_descriptions[$key]}"
+    else
+      printf "  %s: %s\n" "$(green "$key")" "${templates_command_descriptions[$key]}"
+    fi
+  done
+}
+
+############################################ bash ############################################
+read -r -d '' templates_bash_template <<'EOF' || true
+#!/bin/env bash
+#--------------------------------------------
+set -Eeuo pipefail
+if [[ -n "${DEBUG:-}" ]]; then
+  set -x
+fi
+trap stack_trace ERR
+function stack_trace() {
+  echo -e "\nThe command '$BASH_COMMAND' triggerd a stacktrace:\nStack Trace:"
+  for (( i = 1; i < ${#FUNCNAME[@]}; i++ )); do
+  echo "    ($i) ${FUNCNAME[$i]:-(top level)} ${BASH_SOURCE[$i]:-(no file)}:${BASH_LINENO[$(( i - 1 ))]}"
+  done
+}
+error(){ printf "\e[1;31m[ERROR]\e[0m %s\n" "${1:-error message missing}" && trap true ERR && return 1; }
+warning(){ printf "\e[1;33m[WARNING]\e[0m %s\n" "$1" >&2; }
+success(){ printf "\e[1;32m[SUCCESS]\e[0m %s\n" "$1" >&2; }
+info(){ printf "\e[1;34m[INFO]\e[0m %s\n" "$1" >&2; }
+green(){ if [[ -t 0 ]]; then printf "\e[1;32m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+red(){ if [[ -t 0 ]]; then printf "\e[1;31m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+blue(){ if [[ -t 0 ]]; then printf "\e[1;34m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+export SCRIPT_DIR
+#--------------------------------------------
+declare -A ESCAPED_NAME__commands
+declare -A ESCAPED_NAME__command_descriptions
+UNESCAPED_NAME::desc(){
+  ESCAPED_NAME__commands["$1"]="$1"
+  ESCAPED_NAME__command_descriptions["$1"]="$2"
+}
+declare -A ESCAPED_NAME__aliases
+UNESCAPED_NAME::alias(){
+  ESCAPED_NAME__aliases["$1"]+="|$2"
+  ESCAPED_NAME__commands["$2"]="$1"
+}
+UNESCAPED_NAME::desc help "Show this help message"
+UNESCAPED_NAME::help(){
+  case "${1:-list}" in
+    */)
+      printf "Group Commands for %s:\n" "$(green "${1}")"
+      for key in "${!ESCAPED_NAME__command_descriptions[@]}"; do
+        if [[ "$key" == "${1}"?* ]]; then
+          local name_without_group="${key:${#1}}"
+          if [[ ( ! "$name_without_group" == */* ) \
+             || "$name_without_group" =~ ^[a-zA-Z0-9]+/$ ]]; then
+            if [[ -v ESCAPED_NAME__aliases[$key] ]]; then
+              printf "  %s: %s\n" \
+                     "$(green "$key${ESCAPED_NAME__aliases[$key]}")" \
+                     "${ESCAPED_NAME__command_descriptions[$key]}"
+            else
+              printf "  %s: %s\n" \
+                     "$(green "$key")" \
+                     "${ESCAPED_NAME__command_descriptions[$key]}"
+            fi
+          fi
+        fi
+      done
+      ;;
+    list)
+      echo "Usage: UNESCAPED_NAME [command]"
+      echo "Commands:"
+      for key in "${!ESCAPED_NAME__command_descriptions[@]}"; do
+        if [[ ( ! "$key" == */* ) \
+           || "$key" =~ ^[a-zA-Z0-9_.-]+/$ ]]; then
+          if [[ -v ESCAPED_NAME__aliases[$key] ]]; then
+            printf "  %s: %s\n" \
+                   "$(green "$key${ESCAPED_NAME__aliases[$key]}")" \
+                   "${ESCAPED_NAME__command_descriptions[$key]}"
+          else
+            printf "  %s: %s\n" \
+                   "$(green "$key")" \
+                   "${ESCAPED_NAME__command_descriptions[$key]}"
+          fi
+        fi
+      done
+      ;;
+    *)
+      if [[ -v ESCAPED_NAME__command_descriptions[$1] ]]; then
+        printf "Usage: UNESCAPED_NAME %s\n" "$(green "$1")"
+        if [[ -v ESCAPED_NAME__aliases[$1] ]]; then
+          printf "Aliases: %s\n" "$(green "${ESCAPED_NAME__aliases[$1]//|/ }")"
+        fi
+        printf "%s\n" "${ESCAPED_NAME__command_descriptions[$1]}"
+      else
+        error "Unknown command: $1"
+      fi
+      ;;
+  esac
+}
+
+UNESCAPED_NAME(){
+  local base_zero
+  base_zero="$(basename "$0")"
+  if [[ "$base_zero" = "UNESCAPED_NAME" ]]; then
+    command="${1:-help}"
+    shift || true
+  else
+    command="$base_zero"
+  fi
+  if [[ "$command" == */ ]]; then
+    "UNESCAPED_NAME::help" "$command" "$@"
+  elif [[ -v ESCAPED_NAME__commands[$command] ]]; then
+    "UNESCAPED_NAME::${ESCAPED_NAME__commands[$command]}" "$@"
+  else
+    error "Unknown command: $command"
+  fi
+}
+
+######################################### Commands ##########################################
+
+
+
+# Run main if not sourced
+if [[ "$0" == "${BASH_SOURCE[0]}" ]]; then
+    UNESCAPED_NAME "$@"
+fi
+EOF
+
+templates:desc bash "Generate a bash script template"
+templates_list+=(bash)
+templates:bash(){
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -h|--help)
+        echo "Usage: templates bash [options] <name>"
+        echo "Options:"
+        echo "  -h, --help          Show this help message and return"
+        echo "  -n, --name          Set the script name"
+        return 0
+        ;;
+      -n|--name)
+        name="$2"
+        shift
+        ;;
+      *)
+        error "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
+  if [[ -z "$name" ]]; then
+    error "Name is required"
+  fi
+  escaped_name="${name//[^a-zA-Z0-9]/_}"
+  echo "$templates_bash_template" | sed "s/UNESCAPED_NAME/$name/g" | sed "s/ESCAPED_NAME/$escaped_name/g"
+}
+
+
+############################################ deno ############################################
+templates_list+=(deno)
+templates:desc deno "Generate a deno script template"
+templates:deno(){
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -h|--help)
+        echo "Usage: templates deno [options]"
+        echo "Options:"
+        echo "  -h, --help          Show this help message and return"
+        echo "  -n, --name          Set the script name"
+        return 0
+        ;;
+      -n|--name)
+        name="$2"
+        shift
+        ;;
+      *)
+        error "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
+  if [[ -z "$name" ]]; then
+    error "Name is required"
+  fi
+  printf '#!/bin/env -S deno run --lock=deno.lock\n//%s\n' "$name"
+}
+
+############################################ python ############################################
+read -r -d '' templates_python_template <<'EOF' || true
+#!/bin/env python3
+import argparse
+
+def main():
+    parser = argparse.ArgumentParser(description='UNESCAPED_NAME')
+    parser.add_argument('integers', metavar='N', type=int, nargs='+',
+                        help='an integer for the accumulator')
+    parser.add_argument('--sum', dest='accumulate', action='store_const',
+                        const=sum, default=max,
+                        help='sum the integers (default: find the max)')
+
+    args = parser.parse_args()
+    print(args.accumulate(args.integers))
+
+if __name__ == "__main__":
+    main()
+EOF
+templates_list+=(python)
+templates:desc python "Generate a python script template"
+templates:python(){
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -h|--help)
+        echo "Usage: templates python [options]"
+        echo "Options:"
+        echo "  -h, --help          Show this help message and return"
+        echo "  -n, --name          Set the script name"
+        return 0
+        ;;
+      -n|--name)
+        name="$2"
+        shift
+        ;;
+      *)
+        error "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
+  if [[ -z "${name:-}" ]]; then
+    error "Name is required"
+  fi
+  echo "${templates_python_template//UNESCAPED_NAME/$name}"
+}
+
+############################################ Makefile ##################################################
+read -r -d '' templates_makefile_template <<'EOF' || true
+.PHONY: help
+help: ## Show this help message
+	@grep -E '^[a-zA-Z_./-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
+EOF
+templates_list+=(makefile)
+templates:desc makefile "Generate a makefile template"
+templates:makefile(){
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -h|--help)
+        echo "Usage: templates makefile [options]"
+        echo "Options:"
+        echo "  -h, --help          Show this help message and return"
+        echo "  -n, --name          Set the script name"
+        return 0
+        ;;
+      -n|--name)
+        name="$2"
+        shift
+        ;;
+      *)
+        error "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
+  echo "$templates_makefile_template"
+}
+
+############################################ rust ############################################
+read -r -d '' templates_rust_template <<'EOF' || true
+#!/bin/sh
+#![allow()] /*
+# rust self-compiler by M. Al-Qudsi, licensed as public domain or MIT.
+# See <https://neosmart.net/blog/self-compiling-rust-code/> for info & updates.
+OUT=/tmp/$(printf "%s" $(realpath $(which "$0")) | md5sum | cut -d' '  -f1)
+MD5=$(md5sum "$0" | cut -d' '  -f1)
+(test "${MD5}" = "$(cat "${OUT}.md5" 2>/dev/null)" ||
+(grep -Eq '^\s*(\[.*?\])*\s*fn\s*main\b*' "$0" && (rm -f ${OUT};
+rustc "$0" -o ${OUT} && printf "%s" ${MD5} > ${OUT}.md5) || (rm -f ${OUT};
+printf "fn main() {//%s\n}" "$(cat $0)" | rustc - -o ${OUT} &&
+printf "%s" ${MD5} > ${OUT}.md5))) && exec ${OUT} $@ || exit $? #*/
+
+// Wrapping your code in `fn main() { … }` is altogether optional :)
+fn main() {
+    let name = std::env::args().skip(1).next().unwrap_or("world".into());
+    println!("Hello, {}!", name);
+}
+EOF
+templates_list+=(rust)
+templates:desc rust "Generate a rust script template"
+templates:rust(){
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -h|--help)
+        echo "Usage: templates rust [options]"
+        echo "Options:"
+        echo "  -h, --help          Show this help message and return"
+        echo "  -n, --name          Set the script name"
+        return 0
+        ;;
+      -n|--name)
+        name="$2"
+        shift
+        ;;
+      *)
+        error "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
+  echo "$templates_rust_template"
+}
+
+############################################ go ############################################
+templates_list+=(go)
+templates:desc go "Generate a go script template"
+templates:go(){
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -h|--help)
+        echo "Usage: templates go [options]"
+        echo "Options:"
+        echo "  -h, --help          Show this help message and return"
+        echo "  -n, --name          Set the script name"
+        return 0
+        ;;
+      -n|--name)
+        name="$2"
+        shift
+        ;;
+      *)
+        error "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
+  echo "#!/bin/env go run"
+}
+
+############################################ html ############################################
+read -r -d '' templates_html_template <<'EOF' || true
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>TITLE</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+  </head>
+  <body>
+    <h1>TITLE</h1>
+  </body>
+</html>
+EOF
+templates_list+=(html)
+templates:desc html "Generate a html template"
+templates:html(){
+  title="INSERT_TITLE_HERE"
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -h|--help)
+        echo "Usage: templates html [options]"
+        echo "Options:"
+        echo "  -h, --help                       Show this help message and return"
+        echo "  -t, --title, -n, --name          Set the title of the html page"
+        return 0
+        ;;
+      -t|--title|-n|--name)
+        shift
+        title="$1"
+        ;;
+      *)
+        error "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
+  echo "${templates_html_template//TITLE/$title}"
+}
+
+############################################ lua #############################################
+templates_list+=(lua)
+templates:desc lua "Generate a lua script template"
+templates:lua(){
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -h|--help)
+        echo "Usage: templates lua [options]"
+        echo "Options:"
+        echo "  -h, --help          Show this help message and return"
+        echo "  -n, --name          Set the script description"
+        return 0
+        ;;
+      -n|--name)
+        name="$2"
+        shift
+        ;;
+      *)
+        error "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
+  echo "#!/bin/sh"
+}
+
+############################################ janet ############################################
+read -r -d '' templates_janet_template <<'EOF' || true # TODO insert janet boilerplate directly
+#!/bin/env janet
+######################### Imports ########################
+(import spork/sh)
+(import spork/path)
+(import spork/argparse)
+(import ./deps/net/rcon/factorio)
+
+######################### Colors #########################
+(def- colors
+  {:black  30
+   :red    31
+   :green  32
+   :yellow 33
+   :blue   34
+   :purple 35
+   :cyan   36
+   :white  37})
+
+(defn color [col text &opt modifier]
+  (default modifier :regular)
+  (def reset "\e[0m")
+  (unless (os/isatty) (break text))
+  (def code (get colors col (colors :white)))
+  (def prefix
+    (case modifier
+      :regular (string "\e[0;" code "m")
+      :bold (string "\e[1;" code "m")
+      :underline (string "\e[4;" code "m")
+      :background (string "\e[" (+ code 10) "m")
+      :high-intensity (string "\e[0;" (+ code 60) "m")
+      :high-intensity-bold (string "\e[1;" (+ code 60) "m")
+      :high-intensity-background (string "\e[1;" (+ code 70) "m")
+      reset))
+  (string prefix text reset))
+
+######################### Command Handling ###################################
+(def cli/funcs @{})
+(var cli/commands nil)
+(var cli/description nil)
+# TODO rework argparse handling
+# (auto generate argparse from keyed funcs + metadata) e.g.:
+# (defc some-func
+#   some help message for the func in general
+#   {:args {:req_test {:required true :help "required value help" :type :number}
+#           :opt_test {:help "optional"}}}
+#  [pos_arg1 pos_arg2 &named req_test opt_test])
+
+(defn log [x & rest]
+  (def to-print
+    (if (> (length rest) 0)
+      (array x ;rest)
+      x))
+  (if (os/isatty)
+    (printf "%M" to-print)
+    (printf "%j" to-print)))
+
+(defmacro defc
+  "same signature as defn but add the :cli metadata and adds func to global cli/funcs"
+  [name & more]
+  ~(upscope
+    (defn ,name :cli ,;more)
+    (if-let [meta (dyn (quote ,name))
+             cli-func (meta :cli/func)]
+      (put meta :cli/func ((compile cli-func))))
+    (put cli/funcs (keyword (quote ,name)) (dyn (quote ,name)))))
+
+(defn- pad-right
+  "Pad a string on the right with some spaces."
+  [str n]
+  (def len (length str))
+  (if (>= len n)
+    str
+    (string str (string/repeat " " (- n len)))))
+
+(defn- argparse->cli-help [options]
+  # TODO refactor this
+  (def indentation 0)
+  (def out @"")
+  (def flags @"")
+  (def opdoc @"")
+  (def reqdoc @"")
+  (loop [[name handler] :in (sort (pairs options))]
+    (def short (handler :short))
+    (when short (buffer/push-string flags short))
+    (when (string? name)
+      (def kind (handler :kind))
+      (def usage-prefix
+        (string
+          ;(if short [(string/repeat " " (+ indentation 2)) "-" short ", "] [(string/repeat " " (+ indentation 2))])
+          "--" name
+          ;(if (or (= :option kind) (= :accumulate kind))
+             [" " (or (handler :value-name) "VALUE")
+              ;(if-let [d (handler :default)]
+                 ["=" d]
+                 [])]
+             [])))
+      (def usage-fragment
+        (string
+          (pad-right (string usage-prefix " ") 45)
+          (if-let [h (handler :help)] h "")
+          "\n"))
+      (buffer/push-string (if (handler :required) reqdoc opdoc)
+                          usage-fragment)))
+  (unless (empty? reqdoc)
+    (buffer/push out (string/repeat " " indentation) "Required:\n")
+    (buffer/push out reqdoc))
+  (unless (empty? opdoc)
+    (buffer/push out (string/repeat " " indentation) "Optional:\n")
+    (buffer/push out opdoc))
+  (buffer/popn out 1)
+  out)
+
+(defn- get-cli-funcs
+  [&opt env]
+  (default env (curenv))
+  (tabseq [[binding meta] :pairs env
+           :when (get meta :cli)
+           :when (symbol? binding)
+           :when (function? (get meta :value))]
+          binding meta))
+
+(defn- docstring->cli-help [docstring alias has-argparse]
+  (if has-argparse
+    (do
+      # TODO has-argparse bool does not account for :default mapping
+      (def start (if has-argparse 2 1)) # TODO replace with proper PEG grammar
+      (def lines (string/split "\n" docstring)) # TODO handle empty docstring better (currently has empty line)
+      (def out @[])
+      (when (and (> (length lines) 2)
+                 (not= (lines 2) ""))
+        (each line (slice lines 2 -1)
+          (array/push out line)))
+      (if (> (length alias) 0)
+        (array/push out (string "aliases: [" (string/join alias ", ") "]")))
+      (string/join out "\n"))
+    (do
+      (def start (if has-argparse 2 1)) # TODO replace with proper PEG grammar
+      (def lines (string/split "\n" docstring)) # TODO handle empty docstring better (currently has empty line)
+      (def out @[])
+      (array/push out
+        (string/join
+          (map |(string/format "%j" $0)
+               (slice (parse (first lines)) start -1))
+          " "))
+      (when (and (> (length lines) 2)
+                 (not= (lines 2) ""))
+        (each line (slice lines 2 -1)
+          (array/push out line)))
+      (if (> (length alias) 0)
+        (array/push out (string "aliases: [" (string/join alias ", ") "]")))
+      (string/join out "\n"))))
+
+(defn- get-func-help
+  [name command &opt indent]
+  (default indent 2)
+  (def buf @"")
+  (when-let [help-str (command :help)
+             help (string/split "\n" help-str)]
+    (buffer/push buf (string/repeat " " indent) (color :cyan name) " " (first help) "\n")
+    (each line (slice help 1 -1)
+      (buffer/push buf (string/repeat " " (+ indent 2)) line "\n")))
+  buf)
+
+(defn print-help [x &opt patt]
+  # TODO add --all to list all commands regardless of structure
+  # TODO refactor this monstrosity
+  (if patt
+    (cond
+      (x patt) (prin (get-func-help patt (x patt) 0))
+      (index-of patt [:all :--all])
+      (do
+        (print (get-in x [:help :description]))
+        (each c (sort (keys x))
+            (prin (get-func-help c (x c)))))
+      (= (last patt) (chr "/"))
+      (let [commands (sort (filter |(string/has-prefix? patt $0) (keys x)))]
+        (print (color :green patt))
+        (each name commands # TODO only show on level deeper after prefix so test/ shows test/one and test/two but not test/hello/there/how or test/are/you use the same approach as below to mark them as expandable
+          (prin (get-func-help name (x name)))))
+      (error "command not found"))
+    (do
+      (print (get-in x [:help :description]))
+      (def commands
+        (->> (keys x)
+             (map |(if-let [index (string/find "/" $0)] # TODO limit to first level
+                     {:kind :dir
+                      :name (slice $0 0 (inc index))}
+                     {:kind :command
+                      :name $0}))
+             (distinct)
+             (sort-by |($0 :name))))
+      (each c commands
+        (case (c :kind)
+          :dir (print "  " (color :green (c :name)) " show subcommands with 'help " (c :name)"'") # TODO integrate dir/category help here (should also add new macro to define categories (or extend defc))
+          :command
+          (prin (get-func-help (c :name) (x (c :name)))))))))
+
+(defn split-at-double-dash
+  "to be used in :cli/func, splits the inputs args at '--' and calls func with both arg arrays"
+  [{:func func :argparse argparse :args args}]
+  (def index (index-of "--" args))
+  (unless index (error "could not find -- in input args"))
+  (if argparse
+    (func argparse (slice args 0 index) (slice args (inc index) -1))
+    (func (slice args 0 index) (slice args (inc index) -1))))
+
+(defn- map-keys
+   ```
+  Returns new table with function `f` applied to `data`'s
+  keys without recursing.
+  ```
+  [f data]
+  (tabseq [[k v] :pairs data]
+    (f k) v))
+
+(defn argparse-keyed
+  "to be used in :cli/func, calls func with positional args and splices the rest of the args"
+  [x]
+  (def keyed-args (map-keys keyword (x :argparse)))
+  (def pos-args (keyed-args :default))
+  (default pos-args [])
+  (put keyed-args :default nil)
+  (put keyed-args :order nil)
+  ((x :func) ;pos-args ;(mapcat identity (pairs keyed-args))))
+
+(defn generate-commands
+  [&named desc funcs env]
+  (default desc (or cli/description
+                   (dyn :description)
+                   "to be named"))
+  (default funcs
+    (if (= (length cli/funcs) 0)
+      (get-cli-funcs)
+      cli/funcs))
+  (default funcs (get-cli-funcs env))
+  (defn alias [target]
+    {:alias target
+     :func (fn [x & args]
+             ((get-in x [target :func]) x ;args))})
+  (def commands
+    @{:help
+      {:help `show this help`
+       :description desc
+       :func (fn [x &opt patt] (print-help x (if patt (keyword patt) nil)))}
+      :default
+      (alias :help)})
+  # TODO: if category/command exists but category does not then following subcommands should show the help message for ctegory/:
+  #  - category/
+  #  - category
+  #  - help category/
+  #  - help category
+  (loop [[binding meta] :pairs funcs
+         #:when (symbol? binding)
+         :when (function? (get meta :value))
+         :let [name (or (get meta :cli/name) (get meta :name) (keyword binding))
+               options (or (get meta :cli/argparse) (get meta :argparse) (get meta :options))
+               cli-func (get meta :cli/func)
+               raw-func (get meta :value)
+               aliases (or (get meta :cli/alias) (get meta :alias []))
+               auto-print (get meta :cli/print)
+               docstr (or (get meta :cli/doc)
+                          (docstring->cli-help (get meta :doc)
+                                               aliases
+                                               (truthy? options)))]]
+    (def help (string docstr
+                      (if options
+                        (string "\n" (argparse->cli-help options))
+                        "")))
+    (def func
+      (if cli-func # TODO improve this mess by building function AST iterativly
+        (fn [_ & raw_args]
+          (def [args argparse]
+            (if options
+              (let [parsed (argparse/argparse help :args (array "" ;raw_args)
+                                              ;(mapcat identity (pairs options)))]
+                (unless parsed (break 0))
+                [[;(get parsed :default []) ;(get parsed :rest [])]
+                 parsed])
+              [raw_args nil]))
+          (if auto-print
+            (log (cli-func {:func raw-func :args args :argparse argparse}))
+            (cli-func {:func raw-func :args args :argparse argparse})))
+        (fn [_ & raw_args]
+          (def args
+            (if options
+              (let [parsed (argparse/argparse help :args (array "" ;raw_args)
+                                              ;(mapcat identity (pairs options)))]
+                (unless parsed (break 0))
+                [parsed ;(get parsed :default []) ;(get parsed :rest [])])
+              raw_args))
+          (if auto-print
+            (log (raw-func ;args))
+            (raw-func ;args)))))
+    (put commands name {:help help :func func :alias aliases})
+    (each al aliases (put commands (keyword al) (alias name))))
+  commands)
+
+
+# TODO missing features:
+# handle functions with named arguments by auto-generating argparse
+# allow adding type information to functions via argument metadata
+# use the same metadata to also define descriptions and maybe other
+# data about the arguments (this approach might also be used for 
+# multimethods in janet-tools)
+(defn commands
+  `Simple cli wrapper for subcommand based scripts that allows defining functions to use as subcommands.
+  If no funcs are given as input alls funcs of the current environment that have the :cli metadata set to true are used.
+  by using the functions name as command name and docstring as help message.
+  Following function metadata keys can also be added:
+   :cli/name - to override the name of the subcommand
+   :cli/alias - a list of aliases for the subcommand
+   :cli/doc - override docstring for cli help
+   :cli/print - print output of function in jdn
+   :cli/func - a function that is called instead of the real func
+               is passed a single struct as input with:
+                :args for the input-args
+                :argparse - the output of argparse if :options was used
+                :func - the original function
+   :argparse - if defined it is used as a input map for spork/argparse to parse input args
+              the result of this parsing is added as first argument when invoking the function
+   TODO: will add some automatic or definable argument type conversion and handling of named arguments etc. 
+  Spcifying a description via the :desc named argument or the description macro is recommended`
+  [&named args desc funcs env commands]
+  (default args (dyn *args*))
+  (default commands (or cli/commands (generate-commands :desc desc :funcs funcs :env env)))
+  (def name (keyword (path/basename (get args 0 ""))))
+  (if (commands name)
+    ((get-in commands [name :func]) commands ;(slice args 1 -1))
+    (let [subcommand (keyword (get args 1 nil))
+          command (get commands subcommand (commands :default))]
+      (if (= (last subcommand) (chr "/"))
+        ((get-in commands [:help :func]) commands subcommand)
+        ((command :func) commands ;(if (> (length args) 2) (slice args 2 -1) []))))))
+
+(defn description
+  [desc]
+  (setdyn :description desc)
+  (set cli/description desc))
+
+(defn init-main
+  `initialize main function - this is not required
+  but if added at the end of executables this will prerender
+  the commands table`
+  []
+  (set cli/commands (generate-commands)))
+
+(defn main
+  `main func to be used with (use shell/cli)`
+  [& args]
+  (commands :args args))
+
+######################### Start of main script ###############################
+EOF
+templates_list+=(janet)
+templates:desc janet "Generate a janet script template"
+templates:janet(){
+  name="SCRIPT_DESCRIPTION_HERE"
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -h|--help)
+        echo "Usage: templates janet [options]"
+        echo "Options:"
+        echo "  -h, --help          Show this help message and return"
+        echo "  -n, --name          Set the script description"
+        return 0
+        ;;
+      -n|--name)
+        name="$2"
+        shift
+        ;;
+      *)
+        error "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
+  echo "${templates_janet_template//SCRIPT_DESCRIPTION_HERE/$name}"
+}
+
+############################################ sh ############################################
+templates_list+=(sh)
+templates:desc sh "Generate a sh script template"
+templates:sh(){
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -h|--help)
+        echo "Usage: templates sh [options]"
+        echo "Options:"
+        echo "  -h, --help          Show this help message and return"
+        return 0
+        ;;
+      -n|--name)
+        name="$2"
+        shift
+        ;;
+      *)
+        error "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
+  printf "#!/bin/sh\n\n"
+}
+
+############################################ list templates ############################################
+templates:desc list "List available templates"
+templates:list(){
+  for template in "${templates_list[@]}"; do
+    echo "$template"
+  done
+}
+
+
+############################################ main ############################################
+templates:main(){
+  local base_zero
+  base_zero="$(basename "$0")"
+  if [[ "$base_zero" = "templates" ]]; then
+    command="${1:-help}"
+  else
+    command="$base_zero"
+  fi
+  shift || true
+  if [[ -v templates_commands[$command] ]]; then
+    "templates:${templates_commands[$command]}" "$@"
+  else
+    error "Unknown command: $command"
+  fi
+}
+if [[ $- != *i* ]]; then
+  templates:main "$@"
+fi

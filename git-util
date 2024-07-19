@@ -1,0 +1,319 @@
+#!/bin/env bash
+#--------------------------------------------
+set -Eeuo pipefail
+if [[ -n "${DEBUG:-}" ]]; then
+  set -x
+fi
+trap stack_trace ERR
+function stack_trace() {
+  echo -e "\nThe command '$BASH_COMMAND' triggerd a stacktrace:\nStack Trace:"
+  for (( i = 1; i < ${#FUNCNAME[@]}; i++ )); do
+  echo "    ($i) ${FUNCNAME[$i]:-(top level)} ${BASH_SOURCE[$i]:-(no file)}:${BASH_LINENO[$(( i - 1 ))]}"
+  done
+}
+error(){ printf "\e[1;31m[ERROR]\e[0m %s\n" "${1:-error message missing}" && trap true ERR && return 1; }
+warning(){ printf "\e[1;33m[WARNING]\e[0m %s\n" "$1" >&2; }
+success(){ printf "\e[1;32m[SUCCESS]\e[0m %s\n" "$1" >&2; }
+info(){ printf "\e[1;34m[INFO]\e[0m %s\n" "$1" >&2; }
+green(){ if [[ -t 0 ]]; then printf "\e[1;32m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+red(){ if [[ -t 0 ]]; then printf "\e[1;31m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+blue(){ if [[ -t 0 ]]; then printf "\e[1;34m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+export SCRIPT_DIR
+#--------------------------------------------
+declare -A git_util__commands
+declare -A git_util__command_descriptions
+git-util::desc(){
+  git_util__commands["$1"]="$1"
+  git_util__command_descriptions["$1"]="$2"
+}
+declare -A git_util__aliases
+git-util::alias(){
+  git_util__aliases["$1"]+="|$2"
+  git_util__commands["$2"]="$1"
+}
+git-util::desc help "Show this help message"
+git-util::help(){
+  case "${1:-list}" in
+    */)
+      printf "Group Commands for %s:\n" "$(green "${1}")"
+      for key in "${!git_util__command_descriptions[@]}"; do
+        if [[ "$key" == "${1}"?* ]]; then
+          local name_without_group="${key:${#1}}"
+          if [[ ( ! "$name_without_group" == */* ) \
+             || "$name_without_group" =~ ^[a-zA-Z0-9]+/$ ]]; then
+            if [[ -v git_util__aliases[$key] ]]; then
+              printf "  %s: %s\n" \
+                     "$(green "$key${git_util__aliases[$key]}")" \
+                     "${git_util__command_descriptions[$key]}"
+            else
+              printf "  %s: %s\n" \
+                     "$(green "$key")" \
+                     "${git_util__command_descriptions[$key]}"
+            fi
+          fi
+        fi
+      done
+      ;;
+    list)
+      echo "Usage: git-util [command]"
+      echo "Commands:"
+      for key in "${!git_util__command_descriptions[@]}"; do
+        if [[ ( ! "$key" == */* ) \
+           || "$key" =~ ^[a-zA-Z0-9_.-]+/$ ]]; then
+          if [[ -v git_util__aliases[$key] ]]; then
+            printf "  %s: %s\n" \
+                   "$(green "$key${git_util__aliases[$key]}")" \
+                   "${git_util__command_descriptions[$key]}"
+          else
+            printf "  %s: %s\n" \
+                   "$(green "$key")" \
+                   "${git_util__command_descriptions[$key]}"
+          fi
+        fi
+      done
+      ;;
+    *)
+      if [[ -v git_util__command_descriptions[$1] ]]; then
+        printf "Usage: git-util %s\n" "$(green "$1")"
+        if [[ -v git_util__aliases[$1] ]]; then
+          printf "Aliases: %s\n" "$(green "${git_util__aliases[$1]//|/ }")"
+        fi
+        printf "%s\n" "${git_util__command_descriptions[$1]}"
+      else
+        error "Unknown command: $1"
+      fi
+      ;;
+  esac
+}
+
+######################################### Commands ##########################################
+git-util::desc lfs/ "LFS Helpers"
+git-util::desc lfs/clone-no-cache "Clone a repository without LFS cache"
+git-util::lfs/clone-no-cache(){
+ #git lfs clone --no-checkout --no-cache "$@"
+  GIT_LFS_SKIP_SMUDGE=1 git clone "$1" "$2"
+  error "lfs smudging not implemented yet"
+}
+git-util::desc lfs/track-larger-than "Track extensions of files larger than a certain size"
+git-util::lfs/track-larger-than(){
+  local size="1M"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        echo "Usage: git-util lfs/track-larger-than [options]"
+        echo "Options:"
+        echo "  -h, --help: Show this help message"
+        echo "  -s, --size: The size to compare against (default: 1M)"
+        return 0
+        ;;
+      -s|--size)
+        size="$2"
+        shift
+        ;;
+      *)
+        error "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
+  while IFS=$'\n' read -r ext; do
+    git lfs track "*.$ext"
+  done < <(find . -not -path "./.git/*" -type f -size "+$size" -exec sh -c 'echo "${0##*.}"' {} \; | sort | uniq)
+}
+
+git-util::desc blobs/ "Blob Helpers"
+git-util::desc blobs/list-largest "List the largest blobs in the repository"
+git-util::blobs/list-largest(){
+  # git rev-list --objects --all \
+  #   | git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' \
+  #   | grep -v commit \
+  #   | sort --numeric-sort --key=2 \
+  #   | tail -n 10
+  git rev-list --objects --all | git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' | sed -n 's/^blob //p' | sort --numeric-sort --key=2 | cut -c 1-12,41- | $(command -v gnumfmt || echo numfmt) --field=2 --to=iec-i --suffix=B --padding=7 --round=nearest
+}
+
+git-util::desc hooks/ "Hook Helpers"
+git-util::desc hooks/block-unsigned-commits/ "Hook to block unsigned commits"
+git_util_block_unsigned_commits_hook='
+#!/usr/bin/env bash
+
+#
+# Pre-receive hook that will block any unsigned commits and tagswhen pushed to a GitHub Enterprise repository
+# The script will not actually validate the GPG signature (would need access to PKI)
+# but just checks whether all new commits and tags have been signed
+#
+# More details on pre-receive hooks and how to apply them can be found on
+# https://help.github.com/enterprise/admin/guides/developer-workflow/managing-pre-receive-hooks-on-the-github-enterprise-appliance/
+#
+# More details on GPG commit and tag signing can be found on
+# https://help.github.com/articles/signing-commits-using-gpg/
+#
+
+zero_commit="0000000000000000000000000000000000000000"
+
+# we have to change the home directory of GPG
+# as in the default environment, /root/.gnupg is not writeable
+export GNUPGHOME=/tmp/
+
+# Do not traverse over commits that are already in the repository
+# (e.g. in a different branch)
+# This prevents funny errors if pre-receive hooks got enabled after some
+# commits got already in and then somebody tries to create a new branch
+# If this is unwanted behavior, just set the variable to empty
+excludeExisting="--not --all"
+
+while read oldrev newrev refname; do
+  # echo "payload"
+  echo $refname $oldrev $newrev
+
+  # branch or tag get deleted
+  if [ "$newrev" = "$zero_commit" ]; then
+    continue
+  fi
+
+  # Check for new branch or tag
+  if [ "$oldrev" = "$zero_commit" ]; then
+    span=`git rev-list $newrev $excludeExisting`
+  else
+    span=`git rev-list $oldrev..$newrev $excludeExisting`
+  fi
+
+  for COMMIT in $span;
+  do
+    signed=$(git verify-commit $COMMIT 2>&1 | grep "gpg: Signature made")
+    if test -n "$signed"; then
+      echo Commit $COMMIT was signed by a GPG key: $signed
+    else
+      echo Commit $COMMIT was not signed by a GPG key, rejecting push
+      exit 1
+    fi
+  done
+done
+exit 0'
+git-util::desc hooks/block-unsigned-commits/print "Print the block-unsigned-commits hook"
+git-util::hooks/block-unsigned-commits/print(){
+  echo "$git_util_block_unsigned_commits_hook"
+}
+git-util::desc hooks/block-unsigned-commits/install "Install the block-unsigned-commits hook (overwrites existing pre-receive hook)"
+git-util::hooks/block-unsigned-commits/install(){
+  local hook_dir
+  hook_dir="$(git rev-parse --git-path hooks)"
+  if [[ ! -d "$hook_dir" ]]; then
+    error "No hooks directory found"
+  fi
+  echo "$git_util_block_unsigned_commits_hook" > "$hook_dir/pre-receive"
+  chmod +x "$hook_dir/pre-receive"
+}
+
+git-util::desc commits/ "Commit Helpers"
+git-util::desc commits/last-touching-file "Show the last commit touching a file"
+git-util::commits/last-touching-file(){
+  #local file="$1"
+  #git log -1 --pretty=format:"%h %ad %s" --date=short -- "$file"
+  git log -n 1 --pretty=format:%H -- "$@"
+}
+
+git-util::escape_single_quotes(){
+  echo "${1//\'/\'\"\'\"\'}"
+}
+
+git-util::desc fix/ "Utilities to help fix broken repos"
+git-util::desc fix/import "Import objects from another repository"
+git-util::fix/import(){
+  declare remote source_repo
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        echo "Usage: git-util fix/import [options] <source_repo>"
+        echo "Options:"
+        echo "  -h, --help: Show this help message"
+        echo "  -r, --remote <remote>: The ssh remote to use (default: NULL)"
+        return 0
+        ;;
+      -r|--remote)
+        remote="$2"
+        shift
+        ;;
+      *)
+        source_repo="$1"
+        ;;
+    esac
+    shift
+  done
+  if [[ -z "$source_repo" ]]; then
+    error "No source repository specified"
+  fi
+  local type
+  if [[ -n "${remote:-}" ]]; then
+    # shellcheck disable=SC2029
+    ssh "$remote" "git -C '$(git-util::escape_single_quotes "$source_repo")' cat-file --batch-check='%(objecttype) %(objectname) %(objectsize)'" | while read -r type sha size; do
+    ssh -n "$remote" "git -C '$(git-util::escape_single_quotes "$source_repo")' cat-file '$(git-util::escape_single_quotes "$type")' '$(git-util::escape_single_quotes "$sha")'"| git hash-object -w --stdin -t "$type"
+    done
+  else
+    git -C "$source_repo" cat-file --batch-check='%(objecttype) %(objectname) %(objectsize)' | while read -r type sha size; do
+      git -C "$source_repo" cat-file "$type" "$sha" | git hash-object -w --stdin -t "$type"
+    done
+  fi
+}
+
+git-util::desc use-deploy-key "Use a deploy key for a repository"
+git-util::use-deploy-key(){
+  local NO_AGENT
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        echo "Usage: git-util use-deploy-key [options]"
+        echo "Options:"
+        echo "  -h, --help: Show this help message"
+        echo "  --no-agent: Do not use the ssh-agent"
+        return 0
+        ;;
+      --no-agent)
+        NO_AGENT=true
+        ;;
+      *)
+        error "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
+  declare git_dir
+  git_dir="$(git rev-parse --absolute-git-dir)"
+  if [[ ! -d "$git_dir" ]]; then
+    error "Not a git repository"
+  fi
+  if [[ ! -f "$git_dir/id_ed25519" ]]; then
+    ssh-keygen -t ed25519 -f "$git_dir/id_ed25519" -N ""
+  fi
+  local sshCommand
+  if [[ -n "${NO_AGENT:-}" ]]; then
+    sshCommand+="SSH_AUTH_SOCK= "
+  fi
+  sshCommand+="ssh -i '$(git-util::escape_single_quotes "$git_dir")/id_ed25519'"
+  sshCommand+=" -o 'IdentitiesOnly=yes'"
+  sshCommand+=" -o 'ControlPath=$(git-util::escape_single_quotes "$git_dir")/ssh_control'"
+  git config core.sshCommand "$sshCommand"
+  success "Deploy key set up, add the following public key to the repository:"
+  cat "$git_dir/id_ed25519.pub"
+}
+
+######################################### Main ##############################################
+git-util::main(){
+  if [[ "$(basename "$0")" = "git-util" ]]; then
+    command="${1:-help}"
+  else
+    command="$(basename "$0")"
+  fi
+  shift || true
+  if [[ "$command" == */ ]]; then
+    "git-util::help" "$command" "$@"
+  elif [[ -v git_util__commands[$command] ]]; then
+    "git-util::${git_util__commands[$command]}" "$@"
+  else
+    error "Unknown command: $command"
+  fi
+}
+if [[ $- != *i* ]]; then
+  git-util::main "$@"
+fi

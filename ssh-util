@@ -1,0 +1,230 @@
+#!/bin/env bash
+#--------------------------------------------
+set -Eeuo pipefail
+if [[ -n "${DEBUG:-}" ]]; then
+	set -x
+fi
+trap stack_trace ERR
+function stack_trace() {
+	echo -e "\nThe command '$BASH_COMMAND' triggerd a stacktrace:\nStack Trace:"
+	for ((i = 1; i < ${#FUNCNAME[@]}; i++)); do
+		echo "    ($i) ${FUNCNAME[$i]:-(top level)} ${BASH_SOURCE[$i]:-(no file)}:${BASH_LINENO[$((i - 1))]}"
+	done
+}
+error() { printf "\e[1;31m[ERROR]\e[0m %s\n" "${1:-error message missing}" && trap true ERR && return 1; }
+warning() { printf "\e[1;33m[WARNING]\e[0m %s\n" "$1" >&2; }
+success() { printf "\e[1;32m[SUCCESS]\e[0m %s\n" "$1" >&2; }
+info() { printf "\e[1;34m[INFO]\e[0m %s\n" "$1" >&2; }
+green() { if [[ -t 0 ]]; then printf "\e[1;32m%s\e[0m" "$1"; else printf "%s" "$1"; fi; }
+red() { if [[ -t 0 ]]; then printf "\e[1;31m%s\e[0m" "$1"; else printf "%s" "$1"; fi; }
+blue() { if [[ -t 0 ]]; then printf "\e[1;34m%s\e[0m" "$1"; else printf "%s" "$1"; fi; }
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+export SCRIPT_DIR
+#--------------------------------------------
+declare -A ssh_util__commands
+declare -A ssh_util__command_descriptions
+ssh-util::desc() {
+	ssh_util__commands["$1"]="$1"
+	ssh_util__command_descriptions["$1"]="$2"
+}
+declare -A ssh_util__aliases
+ssh-util::alias() {
+	ssh_util__aliases["$1"]+="|$2"
+	ssh_util__commands["$2"]="$1"
+}
+ssh-util::desc help "Show this help message"
+ssh-util::help() {
+	case "${1:-list}" in
+	*/)
+		printf "Group Commands for %s:\n" "$(green "${1}")"
+		for key in "${!ssh_util__command_descriptions[@]}"; do
+			if [[ "$key" == "${1}"?* ]]; then
+				local name_without_group="${key:${#1}}"
+				if [[ (! "$name_without_group" == */*) ||
+					"$name_without_group" =~ ^[a-zA-Z0-9]+/$ ]]; then
+					if [[ -v ssh_util__aliases[$key] ]]; then
+						printf "  %s: %s\n" \
+							"$(green "$key${ssh_util__aliases[$key]}")" \
+							"${ssh_util__command_descriptions[$key]}"
+					else
+						printf "  %s: %s\n" \
+							"$(green "$key")" \
+							"${ssh_util__command_descriptions[$key]}"
+					fi
+				fi
+			fi
+		done
+		;;
+	list)
+		echo "Usage: ssh-util [command]"
+		echo "Commands:"
+		for key in "${!ssh_util__command_descriptions[@]}"; do
+			if [[ (! "$key" == */*) ||
+				"$key" =~ ^[a-zA-Z0-9_.-]+/$ ]]; then
+				if [[ -v ssh_util__aliases[$key] ]]; then
+					printf "  %s: %s\n" \
+						"$(green "$key${ssh_util__aliases[$key]}")" \
+						"${ssh_util__command_descriptions[$key]}"
+				else
+					printf "  %s: %s\n" \
+						"$(green "$key")" \
+						"${ssh_util__command_descriptions[$key]}"
+				fi
+			fi
+		done
+		;;
+	*)
+		if [[ -v ssh_util__command_descriptions[$1] ]]; then
+			printf "Usage: ssh-util %s\n" "$(green "$1")"
+			if [[ -v ssh_util__aliases[$1] ]]; then
+				printf "Aliases: %s\n" "$(green "${ssh_util__aliases[$1]//|/ }")"
+			fi
+			printf "%s\n" "${ssh_util__command_descriptions[$1]}"
+		else
+			error "Unknown command: $1"
+		fi
+		;;
+	esac
+}
+
+ssh-util() {
+	local base_zero
+	base_zero="$(basename "$0")"
+	if [[ "$base_zero" = "ssh-util" ]]; then
+		command="${1:-help}"
+		shift || true
+	else
+		command="$base_zero"
+	fi
+	if [[ "$command" == */ ]]; then
+		"ssh-util::help" "$command" "$@"
+	elif [[ -v ssh_util__commands[$command] ]]; then
+		"ssh-util::${ssh_util__commands[$command]}" "$@"
+	else
+		error "Unknown command: $command"
+	fi
+}
+
+######################################### Commands ##########################################
+
+ssh-util::desc sign "Sign a file with a private ssh key"
+ssh-util::sign() { # TODO look over this code again in the future
+	if test -z "$1"; then
+		echo "Specify file to sign!"
+		exit 1
+	fi
+	if test -f ~/.ssh/tpm.pub; then
+		KEY_PATH="$HOME/.ssh/tpm.pub"
+	else
+		KEY_PATH="$HOME/.ssh/id_ed25519.pub"
+	fi
+	if test -z "${SSH_AUTH_SOCK:-}"; then
+		ssh-keygen -Y sign -f "$KEY_PATH" -n file "$@"
+	else
+		if test -n "${SSH_SIGNING_KEY_PATH:-}"; then
+			ssh-keygen -Y sign -f "$SSH_SIGNING_KEY_PATH" -n file "$@"
+		else
+			tmp="$(mktemp --directory)"
+			mkfifo -m 660 -- "$tmp/fifo"
+			ssh-add -L | head -n 1 >"$tmp/fifo" &
+			ssh-keygen -Y sign -f "$tmp/fifo" -n file "$@"
+		fi
+	fi
+}
+
+ssh-util::desc verify "Verify a file with a public ssh key"
+ssh-util::verify() { # TODO allowed_signers management missing
+	if test -z "$1"; then
+		echo "Specify file to verify!"
+		exit 1
+	fi
+	if test -f ~/.ssh/tpm.pub; then
+		KEY_PATH="$HOME/.ssh/tpm.pub"
+	else
+		KEY_PATH="$HOME/.ssh/id_ed25519.pub"
+	fi
+	ssh-keygen -Y verify -f "$KEY_PATH" -n file "$@"
+}
+
+ssh-util::desc tpm/setup "Setup a TPM based ssh key"
+ssh-util::tpm/setup() {
+	declare USER PIN SOPIN
+	if ! command -v tpm2_ptool >/dev/null; then
+		echo "tpm2tool not installed, please install it via your package manager"
+		echo "e.g.: sudo pacman -S tpm2-pkcs11 tpm2-tools"
+		return 1
+	fi
+	USER="$(id -nu)"
+	if ! getent group tss | cut -d: -f4 | grep -w "^$USER\$" >/dev/null; then
+		echo "User not in tss group, adding you now..."
+		sudo usermod -a -G tss "$USER"
+		echo "Please reboot/relogin"
+		return 1
+	fi
+	echo "Please define a user password:"
+	read -r PIN
+	echo "Please define a supervisor password (defaults to user password if empty):"
+	read -r SOPIN
+	if test -z "$SOPIN"; then
+		SOPIN="$PIN"
+	fi
+	tpm2_ptool init
+	tpm2_ptool addtoken --pid=1 --label=ssh "--userpin=$PIN" "--sopin=$SOPIN"
+	tpm2_ptool addkey --label=ssh "--userpin=$PIN" --algorithm=ecc256
+}
+
+#ssh-util::desc with-key "Run a command with a specific ssh key"
+ssh_util__commands[with - key]="with-key"
+ssh-util::with-key() {
+	key="$1"
+	shift || true
+	ssh -o "IdentitiesOnly=yes" -i "$key" "$@"
+}
+
+ssh-util::desc tpm/sign "Sign a file with a TPM based ssh key"
+ssh-util::tpm/sign() {
+	declare pub
+	pub="$(ssh-add -L | grep libtpm2 | head -n 1)"
+	if [[ ! -f ~/.ssh/tpm.pub ]]; then
+		if [[ "$pub" != "$(cat ~/.ssh/tpm/pub)" ]]; then
+			warning "TPM public key has changed"
+		else
+			echo "$pub" >~/.ssh/tpm.pub
+			success "TPM public key cached"
+		fi
+	#else
+	#  success "TPM public key already cached"
+	fi
+	ssh-keygen -Y sign -f ~/.ssh/tpm.pub -n file "$@"
+}
+
+ssh-util::desc tpm/ssh-keygen "use ssh-keygen with the tpm library loaded"
+ssh-util::tpm/ssh-keygen() {
+	if [[ -f /usr/lib/pkcs11/libtpm2_pkcs11.so ]]; then
+		ssh-keygen -D /usr/lib/pkcs11/libtpm2_pkcs11.so "$@"
+	elif [[ -f /usr/lib/x86_64-linux-gnu/libtpm2_pkcs11.so.1 ]]; then
+		ssh-keygen -D /usr/lib/x86_64-linux-gnu/libtpm2_pkcs11.so.1 "$@"
+	else
+		error "libtpm2 library not found"
+	fi
+}
+
+ssh-util::desc fun/send-mic "Send your microphone to a remote host"
+ssh-util::fun/send-mic() {
+	arecord -f dat - | ssh "$@" "aplay -"
+}
+
+ssh-util::desc fun/telephone "Use ssh as a primitive telephone"
+ssh-util::fun/telephone() {
+	ssh "$@" "pulseaudio -D; arecord -f dat -" | aplay - &
+	local pid1=$!
+	arecord -f dat - | ssh "$@" "aplay -" &
+	local pid2=$!
+	trap 'echo "Stopping $pid1 and $pid2 ..."; kill -s INT "$pid1" "$pid2"' INT
+	wait "$pid1" "$pid2"
+}
+
+# Run main if not sourced
+if [[ "$0" == "${BASH_SOURCE[0]}" ]]; then
+	ssh-util "$@"
+fi
