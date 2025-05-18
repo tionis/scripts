@@ -2,107 +2,107 @@
 #--------------------------------------------
 set -Eeuo pipefail
 if [[ -n "${DEBUG:-}" ]]; then
-  set -x
+	set -x
 fi
 trap stack_trace ERR
 function stack_trace() {
-  echo -e "\nThe command '$BASH_COMMAND' triggerd a stacktrace:\nStack Trace:"
-  for (( i = 1; i < ${#FUNCNAME[@]}; i++ )); do
-  echo "    ($i) ${FUNCNAME[$i]:-(top level)} ${BASH_SOURCE[$i]:-(no file)}:${BASH_LINENO[$(( i - 1 ))]}"
-  done
+	echo -e "\nThe command '$BASH_COMMAND' triggerd a stacktrace:\nStack Trace:"
+	for ((i = 1; i < ${#FUNCNAME[@]}; i++)); do
+		echo "    ($i) ${FUNCNAME[$i]:-(top level)} ${BASH_SOURCE[$i]:-(no file)}:${BASH_LINENO[$((i - 1))]}"
+	done
 }
-error(){ printf "\e[1;31m[ERROR]\e[0m %s\n" "${1:-error message missing}" && trap true ERR && return 1; }
-warning(){ printf "\e[1;33m[WARNING]\e[0m %s\n" "$1" >&2; }
-success(){ printf "\e[1;32m[SUCCESS]\e[0m %s\n" "$1" >&2; }
-info(){ printf "\e[1;34m[INFO]\e[0m %s\n" "$1" >&2; }
-green(){ if [[ -t 0 ]]; then printf "\e[1;32m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
-red(){ if [[ -t 0 ]]; then printf "\e[1;31m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
-blue(){ if [[ -t 0 ]]; then printf "\e[1;34m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+error() { printf "\e[1;31m[ERROR]\e[0m %s\n" "${1:-error message missing}" && trap true ERR && return 1; }
+warning() { printf "\e[1;33m[WARNING]\e[0m %s\n" "$1" >&2; }
+success() { printf "\e[1;32m[SUCCESS]\e[0m %s\n" "$1" >&2; }
+info() { printf "\e[1;34m[INFO]\e[0m %s\n" "$1" >&2; }
+green() { if [[ -t 0 ]]; then printf "\e[1;32m%s\e[0m" "$1"; else printf "%s" "$1"; fi; }
+red() { if [[ -t 0 ]]; then printf "\e[1;31m%s\e[0m" "$1"; else printf "%s" "$1"; fi; }
+blue() { if [[ -t 0 ]]; then printf "\e[1;34m%s\e[0m" "$1"; else printf "%s" "$1"; fi; }
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 export SCRIPT_DIR
 #--------------------------------------------
 declare -A url__commands
 declare -A url__command_descriptions
-url::desc(){
-  url__commands["$1"]="$1"
-  url__command_descriptions["$1"]="$2"
+url::desc() {
+	url__commands["$1"]="$1"
+	url__command_descriptions["$1"]="$2"
 }
 declare -A url__aliases
-url::alias(){
-  url__aliases["$1"]+="|$2"
-  url__commands["$2"]="$1"
+url::alias() {
+	url__aliases["$1"]+="|$2"
+	url__commands["$2"]="$1"
 }
 url::desc help "Show this help message"
-url::help(){
-  case "${1:-list}" in
-    */)
-      printf "Group Commands for %s:\n" "$(green "${1}")"
-      for key in "${!url__command_descriptions[@]}"; do
-        if [[ "$key" == "${1}"?* ]]; then
-          local name_without_group="${key:${#1}}"
-          if [[ ( ! "$name_without_group" == */* ) \
-             || "$name_without_group" =~ ^[a-zA-Z0-9]+/$ ]]; then
-            if [[ -v url__aliases[$key] ]]; then
-              printf "  %s: %s\n" \
-                     "$(green "$key${url__aliases[$key]}")" \
-                     "${url__command_descriptions[$key]}"
-            else
-              printf "  %s: %s\n" \
-                     "$(green "$key")" \
-                     "${url__command_descriptions[$key]}"
-            fi
-          fi
-        fi
-      done
-      ;;
-    list)
-      echo "Usage: url [command]"
-      echo "Commands:"
-      for key in "${!url__command_descriptions[@]}"; do
-        if [[ ( ! "$key" == */* ) \
-           || "$key" =~ ^[a-zA-Z0-9_.-]+/$ ]]; then
-          if [[ -v url__aliases[$key] ]]; then
-            printf "  %s: %s\n" \
-                   "$(green "$key${url__aliases[$key]}")" \
-                   "${url__command_descriptions[$key]}"
-          else
-            printf "  %s: %s\n" \
-                   "$(green "$key")" \
-                   "${url__command_descriptions[$key]}"
-          fi
-        fi
-      done
-      ;;
-    *)
-      if [[ -v url__command_descriptions[$1] ]]; then
-        printf "Usage: url %s\n" "$(green "$1")"
-        if [[ -v url__aliases[$1] ]]; then
-          printf "Aliases: %s\n" "$(green "${url__aliases[$1]//|/ }")"
-        fi
-        printf "%s\n" "${url__command_descriptions[$1]}"
-      else
-        error "Unknown command: $1"
-      fi
-      ;;
-  esac
+url::help() {
+	case "${1:-list}" in
+	*/)
+		printf "Group Commands for %s:\n" "$(green "${1}")"
+		for key in "${!url__command_descriptions[@]}"; do
+			if [[ "$key" == "${1}"?* ]]; then
+				local name_without_group="${key:${#1}}"
+				if [[ (! "$name_without_group" == */*) ||
+					"$name_without_group" =~ ^[a-zA-Z0-9]+/$ ]]; then
+					if [[ -v url__aliases[$key] ]]; then
+						printf "  %s: %s\n" \
+							"$(green "$key${url__aliases[$key]}")" \
+							"${url__command_descriptions[$key]}"
+					else
+						printf "  %s: %s\n" \
+							"$(green "$key")" \
+							"${url__command_descriptions[$key]}"
+					fi
+				fi
+			fi
+		done
+		;;
+	list)
+		echo "Usage: url [command]"
+		echo "Commands:"
+		for key in "${!url__command_descriptions[@]}"; do
+			if [[ (! "$key" == */*) ||
+				"$key" =~ ^[a-zA-Z0-9_.-]+/$ ]]; then
+				if [[ -v url__aliases[$key] ]]; then
+					printf "  %s: %s\n" \
+						"$(green "$key${url__aliases[$key]}")" \
+						"${url__command_descriptions[$key]}"
+				else
+					printf "  %s: %s\n" \
+						"$(green "$key")" \
+						"${url__command_descriptions[$key]}"
+				fi
+			fi
+		done
+		;;
+	*)
+		if [[ -v url__command_descriptions[$1] ]]; then
+			printf "Usage: url %s\n" "$(green "$1")"
+			if [[ -v url__aliases[$1] ]]; then
+				printf "Aliases: %s\n" "$(green "${url__aliases[$1]//|/ }")"
+			fi
+			printf "%s\n" "${url__command_descriptions[$1]}"
+		else
+			error "Unknown command: $1"
+		fi
+		;;
+	esac
 }
 
-url(){
-  local base_zero
-  base_zero="$(basename "$0")"
-  if [[ "$base_zero" = "url" ]]; then
-    command="${1:-help}"
-    shift || true
-  else
-    command="$base_zero"
-  fi
-  if [[ "$command" == */ ]]; then
-    "url::help" "$command" "$@"
-  elif [[ -v url__commands[$command] ]]; then
-    "url::${url__commands[$command]}" "$@"
-  else
-    error "Unknown command: $command"
-  fi
+url() {
+	local base_zero
+	base_zero="$(basename "$0")"
+	if [[ "$base_zero" = "url" ]]; then
+		command="${1:-help}"
+		shift || true
+	else
+		command="$base_zero"
+	fi
+	if [[ "$command" == */ ]]; then
+		"url::help" "$command" "$@"
+	elif [[ -v url__commands[$command] ]]; then
+		"url::${url__commands[$command]}" "$@"
+	else
+		error "Unknown command: $command"
+	fi
 }
 
 # shellcheck disable=SC2016
@@ -137,76 +137,121 @@ def urlparse:
 
 ######################################### Commands ##########################################
 url::desc parse "Parse a URL"
-url::parse(){
-  local URI output
-  output="json"
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      -h|--help)
-        echo "Usage: url parse [options] <URI>"
-        echo "Options:"
-        echo "  -f, --format <format>  Output format (default: json)"
-        echo "               Available formats: json, bash, sh"
-        return 0
-        ;;
-      -f|--format)
-        output="$2"
-        shift
-        ;;
-      *)
-        URI="$1"
-        ;;
-    esac
-    shift
-  done
-  parsed="$(echo "$URI" | jq -R "$url_jq_urlparse"urlparse)"
-  case "$output" in
-    json)
-      echo "$parsed"
-      ;;
-    bash|sh)
-      scheme="$(echo "$parsed" | jq -r '.scheme')"
-      authority="$(echo "$parsed" | jq -r '.authority')"
-      domain="$(echo "$parsed" | jq -r '.domain')"
-      port="$(echo "$parsed" | jq -r '.port')"
-      path="$(echo "$parsed" | jq -r '.path')"
-      declare -A query
-      while IFS= read -r -d '' key; do
-        value="$(echo "$parsed" | jq -r ".query[\"$key\"]")"
-        query["$key"]="$value"
-      done < <(echo "$parsed" | jq -r '.query | keys[]' | tr '\n' '\0')
-      fragment="$(echo "$parsed" | jq -r '.fragment')"
-      case "$output" in
-        bash)
-          echo "scheme=\"$scheme\""
-          echo "authority=\"$authority\""
-          echo "domain=\"$domain\""
-          echo "port=\"$port\""
-          echo "path=\"$path\""
-          for key in "${!query[@]}"; do
-            echo "query[\"$key\"]=\"${query[$key]}\""
-          done
-          echo "fragment=\"$fragment\""
-          ;;
-        sh)
-          echo "export scheme=\"$scheme\""
-          echo "export authority=\"$authority\""
-          echo "export domain=\"$domain\""
-          echo "export port=\"$port\""
-          echo "export path=\"$path\""
-          for key in "${!query[@]}"; do
-            echo "export query_$key=\"${query[$key]}\""
-          done
-          echo "export fragment=\"$fragment\""
-          ;;
-      esac;;
-    *)
-      error "Unknown output format: $output"
-      ;;
-  esac
+url::parse() {
+	local URI output
+	output="json"
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		-h | --help)
+			echo "Usage: url parse [options] <URI>"
+			echo "Options:"
+			echo "  -f, --format <format>  Output format (default: json)"
+			echo "               Available formats: json, bash, sh"
+			return 0
+			;;
+		-f | --format)
+			output="$2"
+			shift
+			;;
+		*)
+			URI="$1"
+			;;
+		esac
+		shift
+	done
+	parsed="$(echo "$URI" | jq -R "$url_jq_urlparse"urlparse)"
+	case "$output" in
+	json)
+		echo "$parsed"
+		;;
+	bash | sh)
+		scheme="$(echo "$parsed" | jq -r '.scheme')"
+		authority="$(echo "$parsed" | jq -r '.authority')"
+		domain="$(echo "$parsed" | jq -r '.domain')"
+		port="$(echo "$parsed" | jq -r '.port')"
+		path="$(echo "$parsed" | jq -r '.path')"
+		declare -A query
+		while IFS= read -r -d '' key; do
+			value="$(echo "$parsed" | jq -r ".query[\"$key\"]")"
+			query["$key"]="$value"
+		done < <(echo "$parsed" | jq -r '.query | keys[]' | tr '\n' '\0')
+		fragment="$(echo "$parsed" | jq -r '.fragment')"
+		case "$output" in
+		bash)
+			echo "scheme=\"$scheme\""
+			echo "authority=\"$authority\""
+			echo "domain=\"$domain\""
+			echo "port=\"$port\""
+			echo "path=\"$path\""
+			for key in "${!query[@]}"; do
+				echo "query[\"$key\"]=\"${query[$key]}\""
+			done
+			echo "fragment=\"$fragment\""
+			;;
+		sh)
+			echo "export scheme=\"$scheme\""
+			echo "export authority=\"$authority\""
+			echo "export domain=\"$domain\""
+			echo "export port=\"$port\""
+			echo "export path=\"$path\""
+			for key in "${!query[@]}"; do
+				echo "export query_$key=\"${query[$key]}\""
+			done
+			echo "export fragment=\"$fragment\""
+			;;
+		esac
+		;;
+	*)
+		error "Unknown output format: $output"
+		;;
+	esac
+}
+
+url::desc encode "Encode a string to URL format"
+url::encode() {
+	local string=""
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		-h | --help)
+			echo "Usage: url encode <string>"
+			return 0
+			;;
+		*)
+			if [[ -n "$string" ]]; then
+				string+=" $1"
+			else
+				string="$1"
+			fi
+			;;
+		esac
+		shift
+	done
+	echo -n "$string" | jq -sRr '@uri'
+}
+
+url::desc decode "Decode a URL encoded string"
+url::decode() {
+	local string=""
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		-h | --help)
+			echo "Usage: url decode <string>"
+			return 0
+			;;
+		*)
+			if [[ -n "$string" ]]; then
+				string+=" $1"
+			else
+				string="$1"
+			fi
+			;;
+		esac
+		shift
+	done
+	echo "$string" | jq -Rr "$url_jq_urlparse"urldecode
 }
 
 # Run main if not sourced
 if [[ "$0" == "${BASH_SOURCE[0]}" ]]; then
-    url "$@"
+	url "$@"
 fi

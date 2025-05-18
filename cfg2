@@ -2,358 +2,369 @@
 #--------------------------------------------
 set -Eeuo pipefail
 if [[ -n "${DEBUG:-}" ]]; then
-  set -x
+	set -x
 fi
 trap stack_trace ERR
 function stack_trace() {
-  echo -e "\nThe command '$BASH_COMMAND' triggerd a stacktrace:\nStack Trace:"
-  for (( i = 1; i < ${#FUNCNAME[@]}; i++ )); do
-  echo "    ($i) ${FUNCNAME[$i]:-(top level)} ${BASH_SOURCE[$i]:-(no file)}:${BASH_LINENO[$(( i - 1 ))]}"
-  done
+	echo -e "\nThe command '$BASH_COMMAND' triggerd a stacktrace:\nStack Trace:"
+	for ((i = 1; i < ${#FUNCNAME[@]}; i++)); do
+		echo "    ($i) ${FUNCNAME[$i]:-(top level)} ${BASH_SOURCE[$i]:-(no file)}:${BASH_LINENO[$((i - 1))]}"
+	done
 }
-error(){ printf "\e[1;31m[ERROR]\e[0m %s\n" "${1:-error message missing}" && trap true ERR && return 1; }
-warning(){ printf "\e[1;33m[WARNING]\e[0m %s\n" "$1" >&2; }
-success(){ printf "\e[1;32m[SUCCESS]\e[0m %s\n" "$1" >&2; }
-info(){ printf "\e[1;34m[INFO]\e[0m %s\n" "$1" >&2; }
-green(){ if [[ -t 0 ]]; then printf "\e[1;32m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
-red(){ if [[ -t 0 ]]; then printf "\e[1;31m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
-blue(){ if [[ -t 0 ]]; then printf "\e[1;34m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+error() { printf "\e[1;31m[ERROR]\e[0m %s\n" "${1:-error message missing}" && trap true ERR && return 1; }
+warning() { printf "\e[1;33m[WARNING]\e[0m %s\n" "$1" >&2; }
+success() { printf "\e[1;32m[SUCCESS]\e[0m %s\n" "$1" >&2; }
+info() { printf "\e[1;34m[INFO]\e[0m %s\n" "$1" >&2; }
+green() { if [[ -t 0 ]]; then printf "\e[1;32m%s\e[0m" "$1"; else printf "%s" "$1"; fi; }
+red() { if [[ -t 0 ]]; then printf "\e[1;31m%s\e[0m" "$1"; else printf "%s" "$1"; fi; }
+blue() { if [[ -t 0 ]]; then printf "\e[1;34m%s\e[0m" "$1"; else printf "%s" "$1"; fi; }
 cfg_script_dir="$(dirname "$(readlink -f "$0")")"
 export cfg_script_dir
 #--------------------------------------------
 declare -A cfg_commands
 declare -A cfg_command_descriptions
-cfg:desc(){
-  cfg_commands["$1"]="$1"
-  cfg_command_descriptions["$1"]="$2"
+cfg:desc() {
+	cfg_commands["$1"]="$1"
+	cfg_command_descriptions["$1"]="$2"
 }
 declare -A cfg_aliases
-cfg:alias(){
-  cfg_aliases["$1"]+="|$2"
-  cfg_commands["$2"]="$1"
+cfg:alias() {
+	cfg_aliases["$1"]+="|$2"
+	cfg_commands["$2"]="$1"
 }
 cfg:desc help "Show this help message"
-cfg:help(){
-  case "${1:-list}" in
-    */)
-      printf "Group Commands for %s:\n" "$(green "${1}")"
-      for key in "${!cfg_command_descriptions[@]}"; do
-        if [[ "$key" == "${1}"?* ]]; then
-          local name_without_group="${key:${#1}}"
-          if [[ ( ! "$name_without_group" == */* ) \
-             || "$name_without_group" =~ ^[a-zA-Z0-9]+/$ ]]; then
-            if [[ -v cfg_aliases[$key] ]]; then
-              printf "  %s: %s\n" \
-                     "$(green "$key${cfg_aliases[$key]}")" \
-                     "${cfg_command_descriptions[$key]}"
-            else
-              printf "  %s: %s\n" \
-                     "$(green "$key")" \
-                     "${cfg_command_descriptions[$key]}"
-            fi
-          fi
-        fi
-      done
-      ;;
-    list)
-      echo "Usage: cfg [command]"
-      echo "Commands:"
-      for key in "${!cfg_command_descriptions[@]}"; do
-        if [[ ( ! "$key" == */* ) \
-           || "$key" =~ ^[a-zA-Z0-9_.-]+/$ ]]; then
-          if [[ -v cfg_aliases[$key] ]]; then
-            printf "  %s: %s\n" \
-                   "$(green "$key${cfg_aliases[$key]}")" \
-                   "${cfg_command_descriptions[$key]}"
-          else
-            printf "  %s: %s\n" \
-                   "$(green "$key")" \
-                   "${cfg_command_descriptions[$key]}"
-          fi
-        fi
-      done
-      ;;
-    *)
-      if [[ -v cfg_command_descriptions[$1] ]]; then
-        printf "Usage: cfg %s\n" "$(green "$1")"
-        if [[ -v cfg_aliases[$1] ]]; then
-          printf "Aliases: %s\n" "$(green "${cfg_aliases[$1]//|/ }")"
-        fi
-        printf "%s\n" "${cfg_command_descriptions[$1]}"
-      else
-        error "Unknown command: $1"
-      fi
-      ;;
-  esac
+cfg:help() {
+	case "${1:-list}" in
+	*/)
+		printf "Group Commands for %s:\n" "$(green "${1}")"
+		for key in "${!cfg_command_descriptions[@]}"; do
+			if [[ "$key" == "${1}"?* ]]; then
+				local name_without_group="${key:${#1}}"
+				if [[ (! "$name_without_group" == */*) ||
+					"$name_without_group" =~ ^[a-zA-Z0-9]+/$ ]]; then
+					if [[ -v cfg_aliases[$key] ]]; then
+						printf "  %s: %s\n" \
+							"$(green "$key${cfg_aliases[$key]}")" \
+							"${cfg_command_descriptions[$key]}"
+					else
+						printf "  %s: %s\n" \
+							"$(green "$key")" \
+							"${cfg_command_descriptions[$key]}"
+					fi
+				fi
+			fi
+		done
+		;;
+	list)
+		echo "Usage: cfg [command]"
+		echo "Commands:"
+		for key in "${!cfg_command_descriptions[@]}"; do
+			if [[ (! "$key" == */*) ||
+				"$key" =~ ^[a-zA-Z0-9_.-]+/$ ]]; then
+				if [[ -v cfg_aliases[$key] ]]; then
+					printf "  %s: %s\n" \
+						"$(green "$key${cfg_aliases[$key]}")" \
+						"${cfg_command_descriptions[$key]}"
+				else
+					printf "  %s: %s\n" \
+						"$(green "$key")" \
+						"${cfg_command_descriptions[$key]}"
+				fi
+			fi
+		done
+		;;
+	*)
+		if [[ -v cfg_command_descriptions[$1] ]]; then
+			printf "Usage: cfg %s\n" "$(green "$1")"
+			if [[ -v cfg_aliases[$1] ]]; then
+				printf "Aliases: %s\n" "$(green "${cfg_aliases[$1]//|/ }")"
+			fi
+			printf "%s\n" "${cfg_command_descriptions[$1]}"
+		else
+			error "Unknown command: $1"
+		fi
+		;;
+	esac
 }
 
 #################################### Internal Functions ######################################
 cfg:join_elements() {
-  local index="$1"
-  shift
-  local array=("$@")
-  
-  # Check if index is within array bounds
-  if (( index < 0 || index >= ${#array[@]} )); then
-    echo "Index out of bounds"
-    return 1
-  fi
+	local index="$1"
+	shift
+	local array=("$@")
 
-  local result=""
-  for ((i = 0; i <= index; i++)); do
-    if [ -n "$result" ]; then
-      result="${result}.${array[$i]}"
-    else
-      result="${array[$i]}"
-    fi
-  done
+	# Check if index is within array bounds
+	if ((index < 0 || index >= ${#array[@]})); then
+		echo "Index out of bounds"
+		return 1
+	fi
 
-  echo "$result"
+	local result=""
+	for ((i = 0; i <= index; i++)); do
+		if [ -n "$result" ]; then
+			result="${result}.${array[$i]}"
+		else
+			result="${array[$i]}"
+		fi
+	done
+
+	echo "$result"
 }
 
 cfg:desc git "Run git command on main repo"
-cfg:git(){
-  git "--git-dir=$HOME/.cfg" "--work-tree=$HOME" "$@"
+cfg:git() {
+	git "--git-dir=$HOME/.cfg" "--work-tree=$HOME" "$@"
 }
 
-cfg:get_worktree_dir(){ # gets worktree of branch, creating it if needed
-  worktree_info="$(cfg:git worktree list | grep "\[$1\]\$")" 2>/dev/null || worktree_info=""
-  if [ -n "$worktree_info" ]; then
-    worktree_path=$(echo "$worktree_info" | awk '{print $1}')
-    echo "$worktree_path"
-  else
-    worktree_path="$HOME/.cfg/non-main-worktrees/$1"
-    cfg:git worktree add "$worktree_path" "$1" >&2
-    echo "$worktree_path"
-  fi
+cfg:get_worktree_dir() { # gets worktree of branch, creating it if needed
+	worktree_info="$(cfg:git worktree list | grep "\[$1\]\$")" 2>/dev/null || worktree_info=""
+	if [ -n "$worktree_info" ]; then
+		worktree_path=$(echo "$worktree_info" | awk '{print $1}')
+		echo "$worktree_path"
+	else
+		worktree_path="$HOME/.cfg/non-main-worktrees/$1"
+		cfg:git worktree add "$worktree_path" "$1" >&2
+		echo "$worktree_path"
+	fi
 }
 
-cfg:sha256(){
-  sha256sum <(printf "%s" "$1") | grep -o '^[a-z0-9]*'
+cfg:sha256() {
+	sha256sum <(printf "%s" "$1") | grep -o '^[a-z0-9]*'
 }
 
-cfg:sha256/file(){
-  sha256sum "$1" | grep -o '^[a-z0-9]*'
+cfg:sha256/file() {
+	sha256sum "$1" | grep -o '^[a-z0-9]*'
 }
 
-cfg:tree(){
-  if command -v tree >/dev/null; then
-    command tree "$@"
-  else
-    old_pwd="$PWD"
-    cd "$1"
-    find . -type f -printf "%P\n"
-    cd "$old_pwd"
-  fi
+cfg:tree() {
+	if command -v tree >/dev/null; then
+		command tree "$@"
+	else
+		old_pwd="$PWD"
+		cd "$1"
+		find . -type f -printf "%P\n"
+		cd "$old_pwd"
+	fi
 }
 
 cfg:trim_prefix_from_list() {
-  local prefix=$1
-  shift
-  local list=("$@")
-  for i in "${!list[@]}"; do
-    list[i]="${list[$i]#"$prefix"}"
-  done
-  if [[ "${#list[@]}" -gt 0 ]]; then
-    printf "%s\n" "${list[@]}"
-  fi
+	local prefix=$1
+	shift
+	local list=("$@")
+	for i in "${!list[@]}"; do
+		list[i]="${list[$i]#"$prefix"}"
+	done
+	if [[ "${#list[@]}" -gt 0 ]]; then
+		printf "%s\n" "${list[@]}"
+	fi
 }
 
-cfg:run(){
-  executable="$1"
-  shift
-  if test -x "$executable"; then
-    "$executable" "$@"
-  else
-    IFS=' ' read -r -a interpreter <<< "$(head -n 1 "$executable" | sed -n 's|^#! *\(.*\)|\1|p')"
-    if [[ -z "${interpreter[*]}" ]]; then
-      interpreter=(bash)
-    fi
-    "${interpreter[@]}" "$executable" "$@"
-  fi
+cfg:run() {
+	executable="$1"
+	shift
+	if test -x "$executable"; then
+		"$executable" "$@"
+	else
+		IFS=' ' read -r -a interpreter <<<"$(head -n 1 "$executable" | sed -n 's|^#! *\(.*\)|\1|p')"
+		if [[ -z "${interpreter[*]}" ]]; then
+			interpreter=(bash)
+		fi
+		"${interpreter[@]}" "$executable" "$@"
+	fi
 }
 
 ##################################### Constants ######################################
 cfg_cache_root_dir="$HOME/.cache/cfg/cache"
 test -d "$cfg_cache_root_dir" || mkdir -p "$CACHE_ROOT_DIR"
 cfg_store_root_dir="$HOME/.config/store"
-cfg_main_gpg_key=995DFE267EA741AD6429131E2A3880E05C5DC4B8
+cfg_main_gpg_key=60677752BBD86A715AA57BD9A073EA3B1AC3CA70
 
 ######################################### Commands ###########################################
 ########################################### Cache ############################################
 cfg:desc cache/ "Manage cache (machine-local kv store)"
 cfg:desc cache/key_exists "Check if key exists in cache"
-cfg:cache/key_exists(){ # check ttl signature?
-  if test -f "$cfg_cache_root_dir/${1:?}"; then
-    if [[ -f "$cfg_cache_root_dir.ttl/${1:?}" ]] && [[ "$(date +%s)" -gt "$(cat "$cfg_cache_root_dir.ttl/${1:?}")" ]]; then
-      echo "Key expired, deleting it"
-      rm "$cfg_cache_root_dir/${1:?}"
-      log "Key expired: ${1:?}"
-      return 1
-    else
-      log "Key exists: ${1:?}"
-      return 0
-    fi
-  else
-    log "Key not found: ${1:?}"
-    return 1
-  fi
+cfg:cache/key_exists() { # check ttl signature?
+	if test -f "$cfg_cache_root_dir/${1:?}"; then
+		if [[ -f "$cfg_cache_root_dir.ttl/${1:?}" ]] && [[ "$(date +%s)" -gt "$(cat "$cfg_cache_root_dir.ttl/${1:?}")" ]]; then
+			echo "Key expired, deleting it"
+			rm "$cfg_cache_root_dir/${1:?}"
+			log "Key expired: ${1:?}"
+			return 1
+		else
+			log "Key exists: ${1:?}"
+			return 0
+		fi
+	else
+		log "Key not found: ${1:?}"
+		return 1
+	fi
 }
 
 cfg:desc cache/set "Set a key in cache"
-cfg:cache/set(){ # TODO encrypt as needed
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      --ttl)
-        ttl="$2"
-        shift 2;;
-      -h|--help)
-        echo "Usage: set [--ttl <seconds>] <path> <value>"
-        return 0;;
-      *)
-        key="$1"
-        value="$2"
-        shift 2;;
-    esac
-  done
-  if [[ -z "${key:-}" ]] || [[ -z "${value:-}" ]]; then
-    error "No key or value provided"
-  fi
-  mkdir -p "$cfg_cache_root_dir/$(dirname "$key")"
-  echo "$value" > "$cfg_cache_root_dir/$key"
-  if [[ -n "${ttl:-}" ]]; then
-    mkdir -p "$cfg_cache_root_dir.ttl/$(dirname "${1:?}")"
-    echo "$(($(date +%s) + "$ttl"))" > "$cfg_cache_root_dir.ttl/$key"
-  fi
+cfg:cache/set() { # TODO encrypt as needed
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		--ttl)
+			ttl="$2"
+			shift 2
+			;;
+		-h | --help)
+			echo "Usage: set [--ttl <seconds>] <path> <value>"
+			return 0
+			;;
+		*)
+			key="$1"
+			value="$2"
+			shift 2
+			;;
+		esac
+	done
+	if [[ -z "${key:-}" ]] || [[ -z "${value:-}" ]]; then
+		error "No key or value provided"
+	fi
+	mkdir -p "$cfg_cache_root_dir/$(dirname "$key")"
+	echo "$value" >"$cfg_cache_root_dir/$key"
+	if [[ -n "${ttl:-}" ]]; then
+		mkdir -p "$cfg_cache_root_dir.ttl/$(dirname "${1:?}")"
+		echo "$(($(date +%s) + "$ttl"))" >"$cfg_cache_root_dir.ttl/$key"
+	fi
 }
 
 cfg:desc cache/get "Get a key from cache"
-cfg:cache/get(){ # TODO decrypt as needed
-  if cfg:cache/key_exists "${1:?}"; then
-    cat "$cfg_cache_root_dir/${1:?}"
-  else
-    error "Key not found or expired: '${1:?}'"
-  fi
+cfg:cache/get() { # TODO decrypt as needed
+	if cfg:cache/key_exists "${1:?}"; then
+		cat "$cfg_cache_root_dir/${1:?}"
+	else
+		error "Key not found or expired: '${1:?}'"
+	fi
 }
 
 cfg:desc cache/rm "Remove a key from cache"
-cfg:cache/rm(){
-  if [[ -e "$cfg_cache_root_dir.ttl/${1:?}" ]]; then
-    rm -r "$cfg_cache_root_dir.ttl/${1:?}"
-  fi
-  rm -r "$cfg_cache_root_dir/${1:?}"
+cfg:cache/rm() {
+	if [[ -e "$cfg_cache_root_dir.ttl/${1:?}" ]]; then
+		rm -r "$cfg_cache_root_dir.ttl/${1:?}"
+	fi
+	rm -r "$cfg_cache_root_dir/${1:?}"
 }
 
 cfg:desc cache/check_expiry "Check expiry of keys in cache"
-cfg:cache/check_expiry(){
-  prev_dir="$PWD"
-  cd "$cfg_cache_root_dir"
-  pattern="${1:-.*}"
-  while read -r file; do
-    if [[ -f "$cfg_cache_root_dir.ttl/$file" ]] && [[ "$(date +%s)" -gt "$(cat "$cfg_cache_root_dir.ttl/$file")" ]]; then
-      echo "Key expired, deleting it"
-      rm "$cfg_cache_root_dir/$file"
-    fi
-  done < <(find . -regextype posix-extended -regex "$pattern")
-  cd "$prev_dir"
+cfg:cache/check_expiry() {
+	prev_dir="$PWD"
+	cd "$cfg_cache_root_dir"
+	pattern="${1:-.*}"
+	while read -r file; do
+		if [[ -f "$cfg_cache_root_dir.ttl/$file" ]] && [[ "$(date +%s)" -gt "$(cat "$cfg_cache_root_dir.ttl/$file")" ]]; then
+			echo "Key expired, deleting it"
+			rm "$cfg_cache_root_dir/$file"
+		fi
+	done < <(find . -regextype posix-extended -regex "$pattern")
+	cd "$prev_dir"
 }
 
 cfg:desc cache/exec "Execute a command and cache the result"
-cfg:cache/exec(){
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      --ttl)
-        ttl="$2"
-        shift 2;;
-      -h|--help)
-        echo "Usage: exec [--ttl <seconds>] <command>"
-        return 0;;
-      *)
-        command="$1"
-        shift;;
-    esac
-  done
-  if [[ -z "${command:-}" ]]; then
-    error "No command provided"
-  fi
-  hash="$(cfg:sha256 "$command")"
-  log "Hash: $hash"
-  result_file="$cfg_cache_root_dir/hash-cache/$hash"
-  if ! cfg:cache/key_exists "hash-cache/$hash"; then
-    mkdir -p "$cfg_cache_root_dir/hash-cache/"
-    bash -c "$command" > "$result_file"
-    if [[ -n "${ttl:-}" ]]; then
-      mkdir -p "$cfg_cache_root_dir.ttl/hash-cache/"
-      echo "$(($(date +%s) + "$ttl"))" > "$cfg_cache_root_dir.ttl/hash-cache/$hash"
-    fi
-  fi
-  cat "$result_file"
+cfg:cache/exec() {
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		--ttl)
+			ttl="$2"
+			shift 2
+			;;
+		-h | --help)
+			echo "Usage: exec [--ttl <seconds>] <command>"
+			return 0
+			;;
+		*)
+			command="$1"
+			shift
+			;;
+		esac
+	done
+	if [[ -z "${command:-}" ]]; then
+		error "No command provided"
+	fi
+	hash="$(cfg:sha256 "$command")"
+	log "Hash: $hash"
+	result_file="$cfg_cache_root_dir/hash-cache/$hash"
+	if ! cfg:cache/key_exists "hash-cache/$hash"; then
+		mkdir -p "$cfg_cache_root_dir/hash-cache/"
+		bash -c "$command" >"$result_file"
+		if [[ -n "${ttl:-}" ]]; then
+			mkdir -p "$cfg_cache_root_dir.ttl/hash-cache/"
+			echo "$(($(date +%s) + "$ttl"))" >"$cfg_cache_root_dir.ttl/hash-cache/$hash"
+		fi
+	fi
+	cat "$result_file"
 }
 
 cfg:desc cache/exec_file "Execute a file and cache the result"
-cfg:cache/exec_file(){
-  file="$1"
-  shift || true
-  args=("$@")
-  file_hash="$(cfg:sha256/file "$file")"
-  args_hash="$(cfg:sha256 "$(printf "%s\n" "${args[@]}")")"
-  hash="$(cfg:sha256 "$file_hash$args_hash")"
-  if ! cfg:cache/key_exists "hash-cache/$hash"; then
-    cfg:cache/set "hash-cache/$hash" "$("$file" "${args[@]}")"
-  fi
-  cfg:cache/get "hash-cache/$hash"
+cfg:cache/exec_file() {
+	file="$1"
+	shift || true
+	args=("$@")
+	file_hash="$(cfg:sha256/file "$file")"
+	args_hash="$(cfg:sha256 "$(printf "%s\n" "${args[@]}")")"
+	hash="$(cfg:sha256 "$file_hash$args_hash")"
+	if ! cfg:cache/key_exists "hash-cache/$hash"; then
+		cfg:cache/set "hash-cache/$hash" "$("$file" "${args[@]}")"
+	fi
+	cfg:cache/get "hash-cache/$hash"
 }
 
 cfg:desc cache/ls "List files in cache"
-cfg:cache/ls(){
-  prev_dir="$PWD"
-  cd "$cfg_cache_root_dir"
-  dir="."
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      -h|--help)
-        echo "Usage: find [options] <dir>"
-        echo "  -n <glob>, --name <glob> - list only files matching the glob"
-        echo "  -r <regex>, --regex <regex> - list only files matching the regex (applies to full path)"
-        echo "  -t, --trim - trim the dir prefix from the output"
-        cd "$prev_dir"
-        return 0;;
-      -n|--name)
-        name="$2"
-        shift 2;;
-      -r|--regex)
-        regex="$2"
-        shift 2;;
-      -t|--trim)
-        trim=1
-        shift;;
-      *)
-        dir="$1"
-        shift;;
-    esac
-  done
-  if [[ ! -d "$dir" ]]; then
-    return 0
-  fi
-  find_args=()
-  if [[ -n "${name:-}" ]]; then
-    find_args+=("-name" "$name")
-  fi
-  if [[ -n "${regex:-}" ]]; then
-    find_args+=("-regex" "$regex")
-  fi
-  key_list=()
-  while IFS=$'\n' read -r -d '' file; do
-    key_list+=("$file")
-  done < <(find "$dir" -type f -regextype posix-extended "${find_args[@]}" -print0)
-  if [[ "${trim:-0}" -gt 0 ]]; then
-    cfg:trim_prefix_from_list "$dir/" "${key_list[@]}"
-  elif [[ "$dir" = "." ]]; then
-    cfg:trim_prefix_from_list "./" "${key_list[@]}"
-  else
-    printf '%s\n' "${key_list[@]}"
-  fi
-  cd "$prev_dir"
+cfg:cache/ls() {
+	prev_dir="$PWD"
+	cd "$cfg_cache_root_dir"
+	dir="."
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		-h | --help)
+			echo "Usage: find [options] <dir>"
+			echo "  -n <glob>, --name <glob> - list only files matching the glob"
+			echo "  -r <regex>, --regex <regex> - list only files matching the regex (applies to full path)"
+			echo "  -t, --trim - trim the dir prefix from the output"
+			cd "$prev_dir"
+			return 0
+			;;
+		-n | --name)
+			name="$2"
+			shift 2
+			;;
+		-r | --regex)
+			regex="$2"
+			shift 2
+			;;
+		-t | --trim)
+			trim=1
+			shift
+			;;
+		*)
+			dir="$1"
+			shift
+			;;
+		esac
+	done
+	if [[ ! -d "$dir" ]]; then
+		return 0
+	fi
+	find_args=()
+	if [[ -n "${name:-}" ]]; then
+		find_args+=("-name" "$name")
+	fi
+	if [[ -n "${regex:-}" ]]; then
+		find_args+=("-regex" "$regex")
+	fi
+	key_list=()
+	while IFS=$'\n' read -r -d '' file; do
+		key_list+=("$file")
+	done < <(find "$dir" -type f -regextype posix-extended "${find_args[@]}" -print0)
+	if [[ "${trim:-0}" -gt 0 ]]; then
+		cfg:trim_prefix_from_list "$dir/" "${key_list[@]}"
+	elif [[ "$dir" = "." ]]; then
+		cfg:trim_prefix_from_list "./" "${key_list[@]}"
+	else
+		printf '%s\n' "${key_list[@]}"
+	fi
+	cd "$prev_dir"
 }
 
 ########################################### Store ############################################
@@ -367,23 +378,23 @@ cfg:cache/ls(){
 ########################################### Util #############################################
 
 ######################################### Main ###############################################
-cfg:main(){
-  local base_zero
-  base_zero="$(basename "$0")"
-  if [[ "$base_zero" = "cfg" || "$base_zero" = "cfg2" ]]; then
-    command="${1:-help}"
-    shift || true
-  else
-    command="$base_zero"
-  fi
-  if [[ "$command" == */ ]]; then
-    "cfg:help" "$command" "$@"
-  elif [[ -v cfg_commands[$command] ]]; then
-    "cfg:${cfg_commands[$command]}" "$@"
-  else
-    cfg:git "$@"
-  fi
+cfg:main() {
+	local base_zero
+	base_zero="$(basename "$0")"
+	if [[ "$base_zero" = "cfg" || "$base_zero" = "cfg2" ]]; then
+		command="${1:-help}"
+		shift || true
+	else
+		command="$base_zero"
+	fi
+	if [[ "$command" == */ ]]; then
+		"cfg:help" "$command" "$@"
+	elif [[ -v cfg_commands[$command] ]]; then
+		"cfg:${cfg_commands[$command]}" "$@"
+	else
+		cfg:git "$@"
+	fi
 }
 if [[ $- != *i* ]]; then
-  cfg:main "$@"
+	cfg:main "$@"
 fi

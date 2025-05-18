@@ -2,54 +2,56 @@
 #--------------------------------------------
 set -Eeuo pipefail
 if [[ -n "${DEBUG:-}" ]]; then
-  set -x
+	set -x
 fi
 trap stack_trace ERR
 function stack_trace() {
-  echo -e "\nThe command '$BASH_COMMAND' triggerd a stacktrace:\nStack Trace:"
-  for (( i = 1; i < ${#FUNCNAME[@]}; i++ )); do
-  echo "    ($i) ${FUNCNAME[$i]:-(top level)} ${BASH_SOURCE[$i]:-(no file)}:${BASH_LINENO[$(( i - 1 ))]}"
-  done
+	echo -e "\nThe command '$BASH_COMMAND' triggerd a stacktrace:\nStack Trace:"
+	for ((i = 1; i < ${#FUNCNAME[@]}; i++)); do
+		echo "    ($i) ${FUNCNAME[$i]:-(top level)} ${BASH_SOURCE[$i]:-(no file)}:${BASH_LINENO[$((i - 1))]}"
+	done
 }
-error(){ printf "\e[1;31m[ERROR]\e[0m %s\n" "${1:-error message missing}" && trap true ERR && return 1; }
-warning(){ printf "\e[1;33m[WARNING]\e[0m %s\n" "$1" >&2; }
-success(){ printf "\e[1;32m[SUCCESS]\e[0m %s\n" "$1" >&2; }
-info(){ printf "\e[1;34m[INFO]\e[0m %s\n" "$1" >&2; }
-green(){ if [[ -t 0 ]]; then printf "\e[1;32m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
-red(){ if [[ -t 0 ]]; then printf "\e[1;31m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
-blue(){ if [[ -t 0 ]]; then printf "\e[1;34m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+error() { printf "\e[1;31m[ERROR]\e[0m %s\n" "${1:-error message missing}" && trap true ERR && return 1; }
+warning() { printf "\e[1;33m[WARNING]\e[0m %s\n" "$1" >&2; }
+success() { printf "\e[1;32m[SUCCESS]\e[0m %s\n" "$1" >&2; }
+info() { printf "\e[1;34m[INFO]\e[0m %s\n" "$1" >&2; }
+green() { if [[ -t 0 ]]; then printf "\e[1;32m%s\e[0m" "$1"; else printf "%s" "$1"; fi; }
+red() { if [[ -t 0 ]]; then printf "\e[1;31m%s\e[0m" "$1"; else printf "%s" "$1"; fi; }
+blue() { if [[ -t 0 ]]; then printf "\e[1;34m%s\e[0m" "$1"; else printf "%s" "$1"; fi; }
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 export SCRIPT_DIR
 #--------------------------------------------\
 # TODO start using mo (the mustache templating engine) to generate the templates
+# reference for adding new languages:
+# https://dbohdan.com/scripts-with-dependencies
 declare -A templates_commands
 declare -A templates_command_descriptions
-templates:desc(){
-  templates_commands["$1"]="$1"
-  templates_command_descriptions["$1"]="$2"
+templates:desc() {
+	templates_commands["$1"]="$1"
+	templates_command_descriptions["$1"]="$2"
 }
 declare -A templates_aliases
-templates:alias(){
-  templates_aliases["$1"]+="|$2"
-  templates_commands["$2"]="$1"
+templates:alias() {
+	templates_aliases["$1"]+="|$2"
+	templates_commands["$2"]="$1"
 }
 templates_list=()
 
 templates:desc help "Show this help message"
-templates:help(){
-  echo "Usage: templates [command]"
-  echo "Commands:"
-  for key in "${!templates_command_descriptions[@]}"; do
-    if [[ -v templates_aliases[$key] ]]; then
-      printf "  %s: %s\n" "$(green "$key${templates_aliases[$key]}")" "${templates_command_descriptions[$key]}"
-    else
-      printf "  %s: %s\n" "$(green "$key")" "${templates_command_descriptions[$key]}"
-    fi
-  done
+templates:help() {
+	echo "Usage: templates [command]"
+	echo "Commands:"
+	for key in "${!templates_command_descriptions[@]}"; do
+		if [[ -v templates_aliases[$key] ]]; then
+			printf "  %s: %s\n" "$(green "$key${templates_aliases[$key]}")" "${templates_command_descriptions[$key]}"
+		else
+			printf "  %s: %s\n" "$(green "$key")" "${templates_command_descriptions[$key]}"
+		fi
+	done
 }
 
-############################################ bash ############################################
-read -r -d '' templates_bash_template <<'EOF' || true
+############################################ bash + commands ############################################
+read -r -d '' templates_bash_commands_template <<'EOF' || true
 #!/bin/env bash
 #--------------------------------------------
 set -Eeuo pipefail
@@ -63,13 +65,14 @@ function stack_trace() {
   echo "    ($i) ${FUNCNAME[$i]:-(top level)} ${BASH_SOURCE[$i]:-(no file)}:${BASH_LINENO[$(( i - 1 ))]}"
   done
 }
-error(){ printf "\e[1;31m[ERROR]\e[0m %s\n" "${1:-error message missing}" && trap true ERR && return 1; }
-warning(){ printf "\e[1;33m[WARNING]\e[0m %s\n" "$1" >&2; }
-success(){ printf "\e[1;32m[SUCCESS]\e[0m %s\n" "$1" >&2; }
-info(){ printf "\e[1;34m[INFO]\e[0m %s\n" "$1" >&2; }
-green(){ if [[ -t 0 ]]; then printf "\e[1;32m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
 red(){ if [[ -t 0 ]]; then printf "\e[1;31m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+green(){ if [[ -t 0 ]]; then printf "\e[1;32m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+yellow(){ if [[ -t 0 ]]; then printf "\e[1;33m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
 blue(){ if [[ -t 0 ]]; then printf "\e[1;34m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+error(){ red      "[ERROR]   " >&2; echo "${1:-error message missing}" >&2 && trap true ERR && return 1; }
+warning(){ yellow "[WARNING] " >&2; echo "$@" >&2; }
+success(){ green  "[SUCCESS] " >&2; echo "$@" >&2; }
+info(){ blue      "[INFO]    " >&2; echo "$@" >&2; }
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 export SCRIPT_DIR
 #--------------------------------------------
@@ -140,9 +143,9 @@ UNESCAPED_NAME::help(){
 }
 
 UNESCAPED_NAME(){
-  local base_zero
+  local base_zero command
   base_zero="$(basename "$0")"
-  if [[ "$base_zero" = "UNESCAPED_NAME" ]]; then
+  if [[ "$base_zero" = ".main" || "$base_zero" = "UNESCAPED_NAME" ]]; then
     command="${1:-help}"
     shift || true
   else
@@ -160,6 +163,70 @@ UNESCAPED_NAME(){
 ######################################### Commands ##########################################
 
 
+# Run main if not sourced
+if [[ "$0" == "${BASH_SOURCE[0]}" ]]; then
+    UNESCAPED_NAME "$@"
+fi
+EOF
+
+templates:desc bash+commands "Generate a bash+subcommands script template"
+templates_list+=(bash+commands)
+templates:bash+commands() {
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		-h | --help)
+			echo "Usage: templates bash [options] <name>"
+			echo "Options:"
+			echo "  -h, --help          Show this help message and return"
+			echo "  -n, --name          Set the script name"
+			return 0
+			;;
+		-n | --name)
+			name="$2"
+			shift
+			;;
+		*)
+			error "Unknown option: $1"
+			;;
+		esac
+		shift
+	done
+	if [[ -z "$name" ]]; then
+		error "Name is required"
+	fi
+	escaped_name="${name//[^a-zA-Z0-9]/_}"
+	echo "$templates_bash_commands_template" | sed "s/UNESCAPED_NAME/$name/g" | sed "s/ESCAPED_NAME/$escaped_name/g"
+}
+
+############################################ bash ###########################################@
+read -r -d '' templates_bash_template <<'EOF' || true
+#!/bin/env bash
+#--------------------------------------------
+set -Eeuo pipefail
+if [[ -n "${DEBUG:-}" ]]; then
+  set -x
+fi
+trap stack_trace ERR
+function stack_trace() {
+  echo -e "\nThe command '$BASH_COMMAND' triggerd a stacktrace:\nStack Trace:"
+  for (( i = 1; i < ${#FUNCNAME[@]}; i++ )); do
+  echo "    ($i) ${FUNCNAME[$i]:-(top level)} ${BASH_SOURCE[$i]:-(no file)}:${BASH_LINENO[$(( i - 1 ))]}"
+  done
+}
+red(){ if [[ -t 0 ]]; then printf "\e[1;31m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+green(){ if [[ -t 0 ]]; then printf "\e[1;32m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+yellow(){ if [[ -t 0 ]]; then printf "\e[1;33m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+blue(){ if [[ -t 0 ]]; then printf "\e[1;34m%s\e[0m" "$1"; else printf "%s" "$1"; fi }
+error(){ red      "[ERROR]   " >&2; echo "${1:-error message missing}" >&2 && trap true ERR && return 1; }
+warning(){ yellow "[WARNING] " >&2; echo "$@" >&2; }
+success(){ green  "[SUCCESS] " >&2; echo "$@" >&2; }
+info(){ blue      "[INFO]    " >&2; echo "$@" >&2; }
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+export SCRIPT_DIR
+#--------------------------------------------
+UNESCAPED_NAME(){
+  # TODO Insert Code here
+}
 
 # Run main if not sourced
 if [[ "$0" == "${BASH_SOURCE[0]}" ]]; then
@@ -169,61 +236,94 @@ EOF
 
 templates:desc bash "Generate a bash script template"
 templates_list+=(bash)
-templates:bash(){
-  while [[ $# -gt 0 ]]; do
-    case $1 in
-      -h|--help)
-        echo "Usage: templates bash [options] <name>"
-        echo "Options:"
-        echo "  -h, --help          Show this help message and return"
-        echo "  -n, --name          Set the script name"
-        return 0
-        ;;
-      -n|--name)
-        name="$2"
-        shift
-        ;;
-      *)
-        error "Unknown option: $1"
-        ;;
-    esac
-    shift
-  done
-  if [[ -z "$name" ]]; then
-    error "Name is required"
-  fi
-  escaped_name="${name//[^a-zA-Z0-9]/_}"
-  echo "$templates_bash_template" | sed "s/UNESCAPED_NAME/$name/g" | sed "s/ESCAPED_NAME/$escaped_name/g"
+templates:bash() {
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		-h | --help)
+			echo "Usage: templates bash [options] <name>"
+			echo "Options:"
+			echo "  -h, --help          Show this help message and return"
+			echo "  -n, --name          Set the script name"
+			return 0
+			;;
+		-n | --name)
+			name="$2"
+			shift
+			;;
+		*)
+			error "Unknown option: $1"
+			;;
+		esac
+		shift
+	done
+	if [[ -z "$name" ]]; then
+		error "Name is required"
+	fi
+	escaped_name="${name//[^a-zA-Z0-9]/_}"
+	echo "$templates_bash_template" | sed "s/UNESCAPED_NAME/$name/g" | sed "s/ESCAPED_NAME/$escaped_name/g"
 }
 
 
 ############################################ deno ############################################
 templates_list+=(deno)
+read -r -d '' templates_deno_template <<'EOF' || true
+#!/bin/env -S deno run
+// vim: filetype=typescript
+import {
+  Command,
+  ValidationError,
+} from "https://deno.land/x/cliffy@v1.0.0-rc.4/command/mod.ts";
+import { exec, OutputMode } from "https://deno.land/x/exec/mod.ts";
+async function execSlurp(cmd:string){
+  return await exec(cmd, {output: OutputMode.Capture}).then(out => out.output)
+}
+
+await new Command()
+  .name("SCRIPT_NAME")
+  .version("0.1.0")
+  .description("A deno script")
+  .option("-e, --example <example>", "An example option")
+  .error((error, cmd) => {
+    if (error instanceof ValidationError) {
+      console.error(error.message);
+    }else{
+      console.error(error);
+    }
+    Deno.exit(error instanceof ValidationError ? error.exitCode : 1);
+  })
+  .action(async (options) => {
+    console.log("Hello, world!");
+  })
+  .parse(Deno.args);
+EOF
+
 templates:desc deno "Generate a deno script template"
-templates:deno(){
-  while [[ $# -gt 0 ]]; do
-    case $1 in
-      -h|--help)
-        echo "Usage: templates deno [options]"
-        echo "Options:"
-        echo "  -h, --help          Show this help message and return"
-        echo "  -n, --name          Set the script name"
-        return 0
-        ;;
-      -n|--name)
-        name="$2"
-        shift
-        ;;
-      *)
-        error "Unknown option: $1"
-        ;;
-    esac
-    shift
-  done
-  if [[ -z "$name" ]]; then
-    error "Name is required"
-  fi
-  printf '#!/bin/env -S deno run --lock=deno.lock\n//%s\n' "$name"
+templates:deno() {
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		-h | --help)
+			echo "Usage: templates deno [options]"
+			echo "Options:"
+			echo "  -h, --help          Show this help message and return"
+			echo "  -n, --name          Set the script name"
+			return 0
+			;;
+		-n | --name)
+			name="$2"
+			shift
+			;;
+		*)
+			error "Unknown option: $1"
+			;;
+		esac
+		shift
+	done
+	if [[ -z "$name" ]]; then
+		error "Name is required"
+	fi
+	#printf '#!/bin/env -S deno run --lock=deno.lock\n//%s\n' "$name"
+	# don't use deno.lock as there is a deno.jsonc config in ~/.config/scripts
+	echo "${templates_deno_template//SCRIPT_NAME/$name}"
 }
 
 ############################################ python ############################################
@@ -244,33 +344,85 @@ def main():
 
 if __name__ == "__main__":
     main()
+# vim: filetype=python
 EOF
 templates_list+=(python)
 templates:desc python "Generate a python script template"
-templates:python(){
+templates:python() {
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		-h | --help)
+			echo "Usage: templates python [options]"
+			echo "Options:"
+			echo "  -h, --help          Show this help message and return"
+			echo "  -n, --name          Set the script name"
+			return 0
+			;;
+		-n | --name)
+			name="$2"
+			shift
+			;;
+		*)
+			error "Unknown option: $1"
+			;;
+		esac
+		shift
+	done
+	if [[ -z "${name:-}" ]]; then
+		error "Name is required"
+	fi
+	echo "${templates_python_template//UNESCAPED_NAME/$name}"
+}
+
+
+############################################ python+uv #################################################
+read -r -d '' templates_python_uv_template <<'EOF' || true
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#    "typer>=0.15",
+#    # "ollama>=0.4.5",
+# ]
+# ///
+import typer
+
+app = typer.Typer()
+
+@app.command()
+def main():
+    typer.echo("Hello, world!")
+
+if __name__ == "__main__":
+    app()
+# vim: filetype=python
+EOF
+templates_list+=(python+uv)
+templates:desc python+uv "Generate a python script template with uv"
+templates:python+uv() {
   while [[ $# -gt 0 ]]; do
     case $1 in
-      -h|--help)
-        echo "Usage: templates python [options]"
-        echo "Options:"
-        echo "  -h, --help          Show this help message and return"
-        echo "  -n, --name          Set the script name"
-        return 0
-        ;;
-      -n|--name)
-        name="$2"
-        shift
-        ;;
-      *)
-        error "Unknown option: $1"
-        ;;
+    -h | --help)
+      echo "Usage: templates python+uv [options]"
+      echo "Options:"
+      echo "  -h, --help          Show this help message and return"
+      echo "  -n, --name          Set the script name"
+      return 0
+      ;;
+    -n | --name)
+      name="$2"
+      shift
+      ;;
+    *)
+      error "Unknown option: $1"
+      ;;
     esac
     shift
   done
-  if [[ -z "${name:-}" ]]; then
-    error "Name is required"
-  fi
-  echo "${templates_python_template//UNESCAPED_NAME/$name}"
+  # if [[ -z "${name:-}" ]]; then
+  #   error "Name is required"
+  # fi
+  echo "${templates_python_uv_template//UNESCAPED_NAME/$name}"
 }
 
 ############################################ Makefile ##################################################
@@ -281,27 +433,27 @@ help: ## Show this help message
 EOF
 templates_list+=(makefile)
 templates:desc makefile "Generate a makefile template"
-templates:makefile(){
-  while [[ $# -gt 0 ]]; do
-    case $1 in
-      -h|--help)
-        echo "Usage: templates makefile [options]"
-        echo "Options:"
-        echo "  -h, --help          Show this help message and return"
-        echo "  -n, --name          Set the script name"
-        return 0
-        ;;
-      -n|--name)
-        name="$2"
-        shift
-        ;;
-      *)
-        error "Unknown option: $1"
-        ;;
-    esac
-    shift
-  done
-  echo "$templates_makefile_template"
+templates:makefile() {
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		-h | --help)
+			echo "Usage: templates makefile [options]"
+			echo "Options:"
+			echo "  -h, --help          Show this help message and return"
+			echo "  -n, --name          Set the script name"
+			return 0
+			;;
+		-n | --name)
+			name="$2"
+			shift
+			;;
+		*)
+			error "Unknown option: $1"
+			;;
+		esac
+		shift
+	done
+	echo "$templates_makefile_template"
 }
 
 ############################################ rust ############################################
@@ -326,53 +478,53 @@ fn main() {
 EOF
 templates_list+=(rust)
 templates:desc rust "Generate a rust script template"
-templates:rust(){
-  while [[ $# -gt 0 ]]; do
-    case $1 in
-      -h|--help)
-        echo "Usage: templates rust [options]"
-        echo "Options:"
-        echo "  -h, --help          Show this help message and return"
-        echo "  -n, --name          Set the script name"
-        return 0
-        ;;
-      -n|--name)
-        name="$2"
-        shift
-        ;;
-      *)
-        error "Unknown option: $1"
-        ;;
-    esac
-    shift
-  done
-  echo "$templates_rust_template"
+templates:rust() {
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		-h | --help)
+			echo "Usage: templates rust [options]"
+			echo "Options:"
+			echo "  -h, --help          Show this help message and return"
+			echo "  -n, --name          Set the script name"
+			return 0
+			;;
+		-n | --name)
+			name="$2"
+			shift
+			;;
+		*)
+			error "Unknown option: $1"
+			;;
+		esac
+		shift
+	done
+	echo "$templates_rust_template"
 }
 
 ############################################ go ############################################
 templates_list+=(go)
 templates:desc go "Generate a go script template"
-templates:go(){
-  while [[ $# -gt 0 ]]; do
-    case $1 in
-      -h|--help)
-        echo "Usage: templates go [options]"
-        echo "Options:"
-        echo "  -h, --help          Show this help message and return"
-        echo "  -n, --name          Set the script name"
-        return 0
-        ;;
-      -n|--name)
-        name="$2"
-        shift
-        ;;
-      *)
-        error "Unknown option: $1"
-        ;;
-    esac
-    shift
-  done
-  echo "#!/bin/env go run"
+templates:go() {
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		-h | --help)
+			echo "Usage: templates go [options]"
+			echo "Options:"
+			echo "  -h, --help          Show this help message and return"
+			echo "  -n, --name          Set the script name"
+			return 0
+			;;
+		-n | --name)
+			name="$2"
+			shift
+			;;
+		*)
+			error "Unknown option: $1"
+			;;
+		esac
+		shift
+	done
+	echo "#!/bin/env go run"
 }
 
 ############################################ html ############################################
@@ -393,54 +545,54 @@ read -r -d '' templates_html_template <<'EOF' || true
 EOF
 templates_list+=(html)
 templates:desc html "Generate a html template"
-templates:html(){
-  title="INSERT_TITLE_HERE"
-  while [[ $# -gt 0 ]]; do
-    case $1 in
-      -h|--help)
-        echo "Usage: templates html [options]"
-        echo "Options:"
-        echo "  -h, --help                       Show this help message and return"
-        echo "  -t, --title, -n, --name          Set the title of the html page"
-        return 0
-        ;;
-      -t|--title|-n|--name)
-        shift
-        title="$1"
-        ;;
-      *)
-        error "Unknown option: $1"
-        ;;
-    esac
-    shift
-  done
-  echo "${templates_html_template//TITLE/$title}"
+templates:html() {
+	title="INSERT_TITLE_HERE"
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		-h | --help)
+			echo "Usage: templates html [options]"
+			echo "Options:"
+			echo "  -h, --help                       Show this help message and return"
+			echo "  -t, --title, -n, --name          Set the title of the html page"
+			return 0
+			;;
+		-t | --title | -n | --name)
+			shift
+			title="$1"
+			;;
+		*)
+			error "Unknown option: $1"
+			;;
+		esac
+		shift
+	done
+	echo "${templates_html_template//TITLE/$title}"
 }
 
 ############################################ lua #############################################
 templates_list+=(lua)
 templates:desc lua "Generate a lua script template"
-templates:lua(){
-  while [[ $# -gt 0 ]]; do
-    case $1 in
-      -h|--help)
-        echo "Usage: templates lua [options]"
-        echo "Options:"
-        echo "  -h, --help          Show this help message and return"
-        echo "  -n, --name          Set the script description"
-        return 0
-        ;;
-      -n|--name)
-        name="$2"
-        shift
-        ;;
-      *)
-        error "Unknown option: $1"
-        ;;
-    esac
-    shift
-  done
-  echo "#!/bin/sh"
+templates:lua() {
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		-h | --help)
+			echo "Usage: templates lua [options]"
+			echo "Options:"
+			echo "  -h, --help          Show this help message and return"
+			echo "  -n, --name          Set the script description"
+			return 0
+			;;
+		-n | --name)
+			name="$2"
+			shift
+			;;
+		*)
+			error "Unknown option: $1"
+			;;
+		esac
+		shift
+	done
+	echo "#!/bin/sh"
 }
 
 ############################################ janet ############################################
@@ -450,7 +602,6 @@ read -r -d '' templates_janet_template <<'EOF' || true # TODO insert janet boile
 (import spork/sh)
 (import spork/path)
 (import spork/argparse)
-(import ./deps/net/rcon/factorio)
 
 ######################### Colors #########################
 (def- colors
@@ -800,80 +951,79 @@ read -r -d '' templates_janet_template <<'EOF' || true # TODO insert janet boile
 EOF
 templates_list+=(janet)
 templates:desc janet "Generate a janet script template"
-templates:janet(){
-  name="SCRIPT_DESCRIPTION_HERE"
-  while [[ $# -gt 0 ]]; do
-    case $1 in
-      -h|--help)
-        echo "Usage: templates janet [options]"
-        echo "Options:"
-        echo "  -h, --help          Show this help message and return"
-        echo "  -n, --name          Set the script description"
-        return 0
-        ;;
-      -n|--name)
-        name="$2"
-        shift
-        ;;
-      *)
-        error "Unknown option: $1"
-        ;;
-    esac
-    shift
-  done
-  echo "${templates_janet_template//SCRIPT_DESCRIPTION_HERE/$name}"
+templates:janet() {
+	name="SCRIPT_DESCRIPTION_HERE"
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		-h | --help)
+			echo "Usage: templates janet [options]"
+			echo "Options:"
+			echo "  -h, --help          Show this help message and return"
+			echo "  -n, --name          Set the script description"
+			return 0
+			;;
+		-n | --name)
+			name="$2"
+			shift
+			;;
+		*)
+			error "Unknown option: $1"
+			;;
+		esac
+		shift
+	done
+	echo "${templates_janet_template//SCRIPT_DESCRIPTION_HERE/$name}"
 }
 
 ############################################ sh ############################################
 templates_list+=(sh)
 templates:desc sh "Generate a sh script template"
-templates:sh(){
-  while [[ $# -gt 0 ]]; do
-    case $1 in
-      -h|--help)
-        echo "Usage: templates sh [options]"
-        echo "Options:"
-        echo "  -h, --help          Show this help message and return"
-        return 0
-        ;;
-      -n|--name)
-        name="$2"
-        shift
-        ;;
-      *)
-        error "Unknown option: $1"
-        ;;
-    esac
-    shift
-  done
-  printf "#!/bin/sh\n\n"
+templates:sh() {
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		-h | --help)
+			echo "Usage: templates sh [options]"
+			echo "Options:"
+			echo "  -h, --help          Show this help message and return"
+			return 0
+			;;
+		-n | --name)
+			name="$2"
+			shift
+			;;
+		*)
+			error "Unknown option: $1"
+			;;
+		esac
+		shift
+	done
+	printf "#!/bin/sh\n\n"
 }
 
 ############################################ list templates ############################################
 templates:desc list "List available templates"
-templates:list(){
-  for template in "${templates_list[@]}"; do
-    echo "$template"
-  done
+templates:list() {
+	for template in "${templates_list[@]}"; do
+		echo "$template"
+	done
 }
-
 
 ############################################ main ############################################
-templates:main(){
-  local base_zero
-  base_zero="$(basename "$0")"
-  if [[ "$base_zero" = "templates" ]]; then
-    command="${1:-help}"
-  else
-    command="$base_zero"
-  fi
-  shift || true
-  if [[ -v templates_commands[$command] ]]; then
-    "templates:${templates_commands[$command]}" "$@"
-  else
-    error "Unknown command: $command"
-  fi
+templates:main() {
+	local base_zero command
+	base_zero="$(basename "$0")"
+	if [[ "$base_zero" = "templates" ]]; then
+		command="${1:-help}"
+	else
+		command="$base_zero"
+	fi
+	shift || true
+	if [[ -v templates_commands[$command] ]]; then
+		"templates:${templates_commands[$command]}" "$@"
+	else
+		error "Unknown command: $command"
+	fi
 }
 if [[ $- != *i* ]]; then
-  templates:main "$@"
+	templates:main "$@"
 fi

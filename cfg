@@ -1,583 +1,705 @@
 #!/bin/env bash
-#{"deps": ["bash", "coreutils", "jq", "openssh", "gpg", "git"]}
+#{"deps": ["bash", "coreutils", "jq", "openssh", "age", "git"]}
 #--------------------------------------------
 set -Eeuo pipefail
 if [[ -n "${DEBUG:-}" ]]; then
-  set -x
+	set -x
 fi
 trap stack_trace ERR
 function stack_trace() {
-  echo -e "\nThe command '$BASH_COMMAND' triggered a stacktrace:\nStack Trace:"
-  for (( i = 1; i < ${#FUNCNAME[@]}; i++ )); do
-    echo "    ($i) ${FUNCNAME[$i]:-(top level)} ${BASH_SOURCE[$i]:-(no file)}:${BASH_LINENO[$(( i - 1 ))]}"
-  done
+	echo -e "\nThe command '$BASH_COMMAND' triggered a stacktrace:\nStack Trace:"
+	for ((i = 1; i < ${#FUNCNAME[@]}; i++)); do
+		echo "    ($i) ${FUNCNAME[$i]:-(top level)} ${BASH_SOURCE[$i]:-(no file)}:${BASH_LINENO[$((i - 1))]}"
+	done
 }
-error(){ printf "\e[1;31m[ERROR]\e[0m %s\n" "${1:-error message missing}" && trap true ERR && exit 1; }
-warning(){ printf "\e[1;33m[WARNING]\e[0m %s\n" "$1" >&2; }
-success(){ printf "\e[1;32m[SUCCESS]\e[0m %s\n" "$1" >&2; }
-info(){ printf "\e[1;34m[INFO]\e[0m %s\n" "$1" >&2; }
-log(){ if [[ -n "${VERBOSE:-}" ]]; then printf "\e[1;34m[INFO]\e[0m %s\n" "$1" >&2; fi }
+error() { printf "\e[1;31m[ERROR]\e[0m %s\n" "${1:-error message missing}" && trap true ERR && exit 1; }
+warning() { printf "\e[1;33m[WARNING]\e[0m %s\n" "$1" >&2; }
+success() { printf "\e[1;32m[SUCCESS]\e[0m %s\n" "$1" >&2; }
+info() { printf "\e[1;34m[INFO]\e[0m %s\n" "$1" >&2; }
+log() { if [[ -n "${VERBOSE:-}" ]]; then printf "\e[1;34m[INFO]\e[0m %s\n" "$1" >&2; fi; }
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 export SCRIPT_DIR
 #--------------------------------------------
 ##################### General Helper Funcs ############################
 join_elements() {
-  local index="$1"
-  shift
-  local array=("$@")
-  
-  # Check if index is within array bounds
-  if (( index < 0 || index >= ${#array[@]} )); then
-    echo "Index out of bounds"
-    return 1
-  fi
+	local index="$1"
+	shift
+	local array=("$@")
 
-  local result=""
-  for ((i = 0; i <= index; i++)); do
-    if [ -n "$result" ]; then
-      result="${result}.${array[$i]}"
-    else
-      result="${array[$i]}"
-    fi
-  done
+	# Check if index is within array bounds
+	if ((index < 0 || index >= ${#array[@]})); then
+		echo "Index out of bounds"
+		return 1
+	fi
 
-  echo "$result"
+	local result=""
+	for ((i = 0; i <= index; i++)); do
+		if [ -n "$result" ]; then
+			result="${result}.${array[$i]}"
+		else
+			result="${array[$i]}"
+		fi
+	done
+
+	echo "$result"
 }
 
-cfg:git(){
-  git "--git-dir=$HOME/.cfg" "--work-tree=$HOME" "$@"
+cfg:git() {
+	git "--git-dir=$HOME/.cfg" "--work-tree=$HOME" "$@"
 }
 
-get_worktree_dir(){ # gets worktree of branch, creating it if needed
-  worktree_info="$(cfg:git worktree list | grep "\[$1\]\$")" 2>/dev/null || worktree_info=""
-  if [ -n "$worktree_info" ]; then
-    worktree_path=$(echo "$worktree_info" | awk '{print $1}')
-    echo "$worktree_path"
-  else
-    worktree_path="$HOME/.cfg/non-main-worktrees/$1"
-    cfg:git worktree add "$worktree_path" "$1" >&2
-    echo "$worktree_path"
-  fi
+get_worktree_dir() { # gets worktree of branch, creating it if needed
+	worktree_info="$(cfg:git worktree list | grep "\[$1\]\$")" 2>/dev/null || worktree_info=""
+	if [ -n "$worktree_info" ]; then
+		worktree_path=$(echo "$worktree_info" | awk '{print $1}')
+		echo "$worktree_path"
+	else
+		worktree_path="$HOME/.cfg/non-main-worktrees/$1"
+		if [[ -d "$HOME/.cfg/git-crypt" ]]; then
+			mkdir -p "$HOME/.cfg/worktrees/$1"
+			cp -r "$HOME/.cfg/git-crypt/" "$HOME/.cfg/worktrees/$1"
+		fi
+		cfg:git worktree add "$worktree_path" "$1" >&2
+		echo "$worktree_path"
+	fi
 }
 
-sha256(){
-  sha256sum <(printf "%s" "$1") | grep -o '^[a-z0-9]*'
+sha256() {
+	sha256sum <(printf "%s" "$1") | grep -o '^[a-z0-9]*'
 }
 
-sha256:file(){
-  sha256sum "$1" | grep -o '^[a-z0-9]*'
+sha256:file() {
+	sha256sum "$1" | grep -o '^[a-z0-9]*'
 }
 
-tree(){
-  if command -v tree >/dev/null; then # TODO remove this optional requirement?
-    command tree "$@"
-  else
-    old_pwd="$PWD"
-    cd "$1"
-    find . -type f -printf "%P\n"
-    cd "$old_pwd"
-  fi
+tree() {
+	if command -v tree >/dev/null; then # TODO remove this optional requirement?
+		command tree "$@"
+	else
+		old_pwd="$PWD"
+		cd "$1"
+		find . -type f -printf "%P\n"
+		cd "$old_pwd"
+	fi
 }
 
 trim_prefix_from_list() {
-  local prefix=$1
-  shift
-  local list=("$@")
-  for i in "${!list[@]}"; do
-    list[i]="${list[$i]#"$prefix"}"
-  done
-  if [[ "${#list[@]}" -gt 0 ]]; then
-    printf "%s\n" "${list[@]}"
-  fi
+	local prefix=$1
+	shift
+	local list=("$@")
+	for i in "${!list[@]}"; do
+		list[i]="${list[$i]#"$prefix"}"
+	done
+	if [[ "${#list[@]}" -gt 0 ]]; then
+		printf "%s\n" "${list[@]}"
+	fi
 }
 
-run(){
-  executable="$1"
-  shift
-  if test -x "$executable"; then
-    "$executable" "$@"
-  else
-    IFS=' ' read -r -a interpreter <<< "$(head -n 1 "$executable" | sed -n 's|^#! *\(.*\)|\1|p')"
-    if [[ -z "${interpreter[*]}" ]]; then
-      interpreter=(bash)
-    fi
-    "${interpreter[@]}" "$executable" "$@"
-  fi
+run() {
+	executable="$1"
+	shift
+	if test -x "$executable"; then
+		"$executable" "$@"
+	else
+		IFS=' ' read -r -a interpreter <<<"$(head -n 1 "$executable" | sed -n 's|^#! *\(.*\)|\1|p')"
+		if [[ -z "${interpreter[*]}" ]]; then
+			interpreter=(bash)
+		fi
+		"${interpreter[@]}" "$executable" "$@"
+	fi
 }
 
 ##################################### Constants ######################################
 CACHE_ROOT_DIR="$HOME/.cache/cfg/cache"
 test -d "$CACHE_ROOT_DIR" || mkdir -p "$CACHE_ROOT_DIR"
 STORE_ROOT_DIR="$HOME/.config/store"
-MAIN_GPG_KEY=995DFE267EA741AD6429131E2A3880E05C5DC4B8
+#MAIN_GPG_KEY=60677752BBD86A715AA57BD9A073EA3B1AC3CA70
 
 ##################################### Cache Management ################################
-cache_key_exists(){ # check ttl signature?
-  if test -f "$CACHE_ROOT_DIR/${1:?}"; then
-    if [[ -f "$CACHE_ROOT_DIR.ttl/${1:?}" ]] && [[ "$(date +%s)" -gt "$(cat "$CACHE_ROOT_DIR.ttl/${1:?}")" ]]; then
-      echo "Key expired, deleting it"
-      rm "$CACHE_ROOT_DIR/${1:?}"
-      log "Key expired: ${1:?}"
-      return 1
-    else
-      log "Key exists: ${1:?}"
-      return 0
-    fi
-  else
-    log "Key not found: ${1:?}"
-    return 1
-  fi
+cache_key_exists() { # check ttl signature?
+	if test -f "$CACHE_ROOT_DIR/${1:?}"; then
+		if [[ -f "$CACHE_ROOT_DIR.ttl/${1:?}" ]] && [[ "$(date +%s)" -gt "$(cat "$CACHE_ROOT_DIR.ttl/${1:?}")" ]]; then
+			echo "Key expired, deleting it"
+			rm "$CACHE_ROOT_DIR/${1:?}"
+			log "Key expired: ${1:?}"
+			return 1
+		else
+			log "Key exists: ${1:?}"
+			return 0
+		fi
+	else
+		log "Key not found: ${1:?}"
+		return 1
+	fi
 }
 
-cache_key_set(){ # TODO encrypt as needed
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      --ttl)
-        ttl="$2"
-        shift 2;;
-      -h|--help)
-        echo "Usage: set [--ttl <seconds>] <path> <value>"
-        return 0;;
-      *)
-        key="$1"
-        value="$2"
-        shift 2;;
-    esac
-  done
-  if [[ -z "${key:-}" ]] || [[ -z "${value:-}" ]]; then
-    error "No key or value provided"
-  fi
-  mkdir -p "$CACHE_ROOT_DIR/$(dirname "$key")"
-  echo "$value" > "$CACHE_ROOT_DIR/$key"
-  if [[ -n "${ttl:-}" ]]; then
-    mkdir -p "$CACHE_ROOT_DIR.ttl/$(dirname "${1:?}")"
-    echo "$(($(date +%s) + "$ttl"))" > "$CACHE_ROOT_DIR.ttl/$key"
-  fi
+cache_key_set() { # TODO encrypt as needed
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		--ttl)
+			ttl="$2"
+			shift 2
+			;;
+		-h | --help)
+			echo "Usage: set [--ttl <seconds>] <path> <value>"
+			return 0
+			;;
+		*)
+			key="$1"
+			value="$2"
+			shift 2
+			;;
+		esac
+	done
+	if [[ -z "${key:-}" ]] || [[ -z "${value:-}" ]]; then
+		error "No key or value provided"
+	fi
+	mkdir -p "$CACHE_ROOT_DIR/$(dirname "$key")"
+	echo "$value" >"$CACHE_ROOT_DIR/$key"
+	if [[ -n "${ttl:-}" ]]; then
+		mkdir -p "$CACHE_ROOT_DIR.ttl/$(dirname "${1:?}")"
+		echo "$(($(date +%s) + "$ttl"))" >"$CACHE_ROOT_DIR.ttl/$key"
+	fi
 }
 
-cache_key_get(){ # TODO decrypt as needed
-  if cache_key_exists "${1:?}"; then
-    cat "$CACHE_ROOT_DIR/${1:?}"
-  else
-    error "Key not found or expired: '${1:?}'"
-  fi
+cache_key_get() { # TODO decrypt as needed
+	local ignore_failures key
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		-h | --help)
+			echo "Usage: get <path>"
+			echo "	-h, --help - show this help"
+			echo "  -i, --ignore-failures - ignore non existing keys, return empty string"
+			return 0
+			;;
+		-i | --ignore-failures)
+			ignore_failures=1
+			shift
+			;;
+		*)
+			key="$1"
+			shift
+			;;
+		esac
+	done
+	if [[ -z "${key:-}" ]]; then
+		error "Key not specified!"
+	fi
+	if cache_key_exists "${key:?}"; then
+		cat "$CACHE_ROOT_DIR/${key:?}"
+	else
+		if [[ -n "${ignore_failures:-}" ]]; then
+			return 0
+		else
+			error "Key not found or expired: '${1:?}'"
+		fi
+	fi
 }
 
-cache_key_rm(){
-  if [[ -e "$CACHE_ROOT_DIR.ttl/${1:?}" ]]; then
-    rm -r "$CACHE_ROOT_DIR.ttl/${1:?}"
-  fi
-  rm -r "$CACHE_ROOT_DIR/${1:?}"
+cache_key_rm() {
+	if [[ -e "$CACHE_ROOT_DIR.ttl/${1:?}" ]]; then
+		rm -r "$CACHE_ROOT_DIR.ttl/${1:?}"
+	fi
+	rm -r "$CACHE_ROOT_DIR/${1:?}"
 }
 
-cache_check_expiry(){
-  prev_dir="$PWD"
-  cd "$CACHE_ROOT_DIR"
-  pattern="${1:-.*}"
-  while read -r file; do
-    if [[ -f "$CACHE_ROOT_DIR.ttl/$file" ]] && [[ "$(date +%s)" -gt "$(cat "$CACHE_ROOT_DIR.ttl/$file")" ]]; then
-      echo "Key expired, deleting it"
-      rm "$CACHE_ROOT_DIR/$file"
-    fi
-  done < <(find . -regextype posix-extended -regex "$pattern")
-  cd "$prev_dir"
+cache_check_expiry() {
+	prev_dir="$PWD"
+	cd "$CACHE_ROOT_DIR"
+	pattern="${1:-.*}"
+	while read -r file; do
+		if [[ -f "$CACHE_ROOT_DIR.ttl/$file" ]] && [[ "$(date +%s)" -gt "$(cat "$CACHE_ROOT_DIR.ttl/$file")" ]]; then
+			echo "Key expired, deleting it"
+			rm "$CACHE_ROOT_DIR/$file"
+		fi
+	done < <(find . -regextype posix-extended -regex "$pattern")
+	cd "$prev_dir"
 }
 
-cache_exec(){ # TODO use unified hash cache?
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      --ttl)
-        ttl="$2"
-        shift 2;;
-      -h|--help)
-        echo "Usage: exec [--ttl <seconds>] <command>"
-        return 0;;
-      *)
-        command="$1"
-        shift;;
-    esac
-  done
-  if [[ -z "${command:-}" ]]; then
-    error "No command provided"
-  fi
-  hash="$(sha256 "$command")"
-  log "Hash: $hash"
-  result_file="$CACHE_ROOT_DIR/hash-cache/$hash"
-  if ! cache_key_exists "hash-cache/$hash"; then
-    mkdir -p "$CACHE_ROOT_DIR/hash-cache/"
-    bash -c "$command" > "$result_file"
-    if [[ -n "${ttl:-}" ]]; then
-      mkdir -p "$CACHE_ROOT_DIR.ttl/hash-cache/"
-      echo "$(($(date +%s) + "$ttl"))" > "$CACHE_ROOT_DIR.ttl/hash-cache/$hash"
-    fi
-  fi
-  cat "$result_file"
+cache_exec() { # TODO use unified hash cache?
+	local command ignore_failures ttl result_file hash
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		--help | -h)
+			echo "Usage: exec [--ttl <seconds>] <command>"
+			echo "  -i, --ignore-failures - ignore failures of the command"
+			echo "  -v, --verbose - print the command output"
+			return 0
+			;;
+		--ttl)
+			ttl="$2"
+			shift 2
+			;;
+		-i | --ignore-failures)
+			ignore_failures=1
+			shift
+			;;
+		-v | --verbose)
+			VERBOSE=1
+			shift
+			;;
+		*)
+			command="$1"
+			shift
+			;;
+		esac
+	done
+	if [[ -z "${command:-}" ]]; then
+		error "No command provided"
+	fi
+	hash="$(sha256 "$command")"
+	log "Hash: $hash"
+	result_file="$CACHE_ROOT_DIR/hash-cache/$hash"
+	if ! cache_key_exists "hash-cache/$hash"; then
+		mkdir -p "$CACHE_ROOT_DIR/hash-cache/"
+		if [[ -n "${ignore_failures:-}" ]]; then
+			bash -c "$command" >"$result_file" || true
+		else
+			bash -c "$command" >"$result_file"
+		fi
+		if [[ -n "${ttl:-}" ]]; then
+			mkdir -p "$CACHE_ROOT_DIR.ttl/hash-cache/"
+			echo "$(($(date +%s) + "$ttl"))" >"$CACHE_ROOT_DIR.ttl/hash-cache/$hash"
+		fi
+	fi
+	cat "$result_file"
 }
 
-cache_exec_file(){
-  file="$1"
-  shift || true
-  args=("$@")
-  file_hash="$(sha256:file "$file")"
-  args_hash="$(sha256 "$(printf "%s\n" "${args[@]}")")"
-  hash="$(sha256 "$file_hash$args_hash")"
-  if ! cache_key_exists "hash-cache/$hash"; then
-    cache_key_set "hash-cache/$hash" "$("$file" "${args[@]}")"
-  fi
-  cache_key_get "hash-cache/$hash"
+cache_exec_file() {
+	file="$1"
+	shift || true
+	args=("$@")
+	file_hash="$(sha256:file "$file")"
+	args_hash="$(sha256 "$(printf "%s\n" "${args[@]}")")"
+	hash="$(sha256 "$file_hash$args_hash")"
+	if ! cache_key_exists "hash-cache/$hash"; then
+		cache_key_set "hash-cache/$hash" "$("$file" "${args[@]}")"
+	fi
+	cache_key_get "hash-cache/$hash"
 }
 
-cache_ls(){
-  prev_dir="$PWD"
-  cd "$CACHE_ROOT_DIR"
-  dir="."
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      -h|--help)
-        echo "Usage: find [options] <dir>"
-        echo "  -n <glob>, --name <glob> - list only files matching the glob"
-        echo "  -r <regex>, --regex <regex> - list only files matching the regex (applies to full path)"
-        echo "  -t, --trim - trim the dir prefix from the output"
-        cd "$prev_dir"
-        return 0;;
-      -n|--name)
-        name="$2"
-        shift 2;;
-      -r|--regex)
-        regex="$2"
-        shift 2;;
-      -t|--trim)
-        trim=1
-        shift;;
-      *)
-        dir="$1"
-        shift;;
-    esac
-  done
-  if [[ ! -d "$dir" ]]; then
-    return 0
-  fi
-  find_args=()
-  if [[ -n "${name:-}" ]]; then
-    find_args+=("-name" "$name")
-  fi
-  if [[ -n "${regex:-}" ]]; then
-    find_args+=("-regex" "$regex")
-  fi
-  key_list=()
-  while IFS=$'\n' read -r -d '' file; do
-    key_list+=("$file")
-  done < <(find "$dir" -type f -regextype posix-extended "${find_args[@]}" -print0)
-  if [[ "${trim:-0}" -gt 0 ]]; then
-    trim_prefix_from_list "$dir/" "${key_list[@]}"
-  elif [[ "$dir" = "." ]]; then
-    trim_prefix_from_list "./" "${key_list[@]}"
-  else
-    printf '%s\n' "${key_list[@]}"
-  fi
-  cd "$prev_dir"
+cache_ls() {
+	prev_dir="$PWD"
+	cd "$CACHE_ROOT_DIR"
+	dir="."
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		-h | --help)
+			echo "Usage: find [options] <dir>"
+			echo "  -n <glob>, --name <glob> - list only files matching the glob"
+			echo "  -r <regex>, --regex <regex> - list only files matching the regex (applies to full path)"
+			echo "  -t, --trim - trim the dir prefix from the output"
+			cd "$prev_dir"
+			return 0
+			;;
+		-n | --name)
+			name="$2"
+			shift 2
+			;;
+		-r | --regex)
+			regex="$2"
+			shift 2
+			;;
+		-t | --trim)
+			trim=1
+			shift
+			;;
+		*)
+			dir="$1"
+			shift
+			;;
+		esac
+	done
+	if [[ ! -d "$dir" ]]; then
+		return 0
+	fi
+	find_args=()
+	if [[ -n "${name:-}" ]]; then
+		find_args+=("-name" "$name")
+	fi
+	if [[ -n "${regex:-}" ]]; then
+		find_args+=("-regex" "$regex")
+	fi
+	key_list=()
+	while IFS=$'\n' read -r -d '' file; do
+		key_list+=("$file")
+	done < <(find "$dir" -type f -regextype posix-extended "${find_args[@]}" -print0)
+	if [[ "${trim:-0}" -gt 0 ]]; then
+		trim_prefix_from_list "$dir/" "${key_list[@]}"
+	elif [[ "$dir" = "." ]]; then
+		trim_prefix_from_list "./" "${key_list[@]}"
+	else
+		printf '%s\n' "${key_list[@]}"
+	fi
+	cd "$prev_dir"
 }
 
-cfg_cache(){
-  case ${1:-help} in
-    get)
-      shift || true
-      cache_key_get "$@";;
-    exec)
-      shift || true
-      cache_exec "$@";;
-    exec_file)
-     shift || true
-     cache_exec_file "$@";;
-    exists)
-      shift || true
-      cache_key_exists "$@";;
-    set)
-      shift || true
-      cache_key_set "$@";;
-    rm)
-      shift || true
-      cache_key_rm "$@";;
-    ls)
-      shift || true
-      cache_check_expiry ".*"
-      cache_ls "$@";;
-    tree)
-      cache_check_expiry ".*"
-      tree "$CACHE_ROOT_DIR/${2:-""}";;
-    help)
-      echo "Available commands:"
-      echo "  get \$path"
-      echo "  exec \$command - exec a command and cache the result"
-      echo "  exec_file \$script_path - exec a script and cache it's result based on file content"
-      echo "  set \$path \$value"
-      echo "  rm \$path"
-      echo "  ls \$opt_dir"
-      ;;
-    *)
-      echo "Unknown subcommand: '${1:-}'"
-      exit 1;;
-esac
+cfg_cache() {
+	case ${1:-help} in
+	get)
+		shift || true
+		cache_key_get "$@"
+		;;
+	exec)
+		shift || true
+		cache_exec "$@"
+		;;
+	exec_file)
+		shift || true
+		cache_exec_file "$@"
+		;;
+	exists)
+		shift || true
+		cache_key_exists "$@"
+		;;
+	set)
+		shift || true
+		cache_key_set "$@"
+		;;
+	rm)
+		shift || true
+		cache_key_rm "$@"
+		;;
+	ls)
+		shift || true
+		cache_check_expiry ".*"
+		cache_ls "$@"
+		;;
+	tree)
+		cache_check_expiry ".*"
+		tree "$CACHE_ROOT_DIR/${2:-""}"
+		;;
+	help)
+		echo "Available commands:"
+		echo "  get \$path"
+		echo "  exec \$command - exec a command and cache the result"
+		echo "  exec_file \$script_path - exec a script and cache it's result based on file content"
+		echo "  set \$path \$value"
+		echo "  rm \$path"
+		echo "  ls \$opt_dir"
+		;;
+	*)
+		echo "Unknown subcommand: '${1:-}'"
+		exit 1
+		;;
+	esac
 }
-
 
 ##################################### Store Handling ###################################
-cfg_store_set(){
-  recipients=("$MAIN_GPG_KEY")
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      --recipient|-r)
-        recipients+=("$2")
-        encrypt=1
-        shift 2
-        ;;
-      --encrypt|-e)
-        encrypt=1
-        shift
-        ;;
-      --commit|-c)
-        commit=1
-        shift
-        ;;
-      -h|--help)
-        echo "Usage: store set [-r|--recipient <gpg-recipient>] [-c|--commit] [-e|--encrypt] <key> <value>"
-        echo "main gpg key is always in the recipient list per default"
-        echo "if any recipients are added encryption is enabled by default"
-        return 0
-        ;;
-      *)
-        key="$1"
-        value="$2"
-        shift 2
-        ;;
-    esac
-  done
-  mkdir -p "$(dirname "$STORE_ROOT_DIR/$key")"
-  if [[ "${encrypt:-0}" -eq 1 ]]; then
-    gpg_cmd="gpg --encrypt --armor"
-    for recipient in "${recipients[@]}"; do
-        gpg_cmd+=" --recipient $recipient"
-    done
-    gpg_cmd+=" --output -"
-    printf "%s" "$value" | $gpg_cmd > "$STORE_ROOT_DIR/$key"
-  else
-    printf "%s" "$value" > "$STORE_ROOT_DIR/$key"
-  fi
-  if [[ "${commit:-0}" -eq 1 ]]; then
-    cfg:git add "$STORE_ROOT_DIR/$key"
-    case "$(cfg:git status --short "$STORE_ROOT_DIR/$key" | awk '{ print $1 }')" in
-      A)
-        cfg:git commit -m "added $key to store";;
-      *)
-        cfg:git commit -m "modified $key in store";;
-    esac
-  fi
+cfg_store_set() {
+	# TODO migrate to age based encryption
+	declare encrypt recipients key value commit password
+	recipients=()
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		--recipient | -r)
+			recipients+=("$2")
+			encrypt=yes
+			shift 2
+			;;
+		--encrypt | -e)
+			encrypt=yes
+			shift
+			;;
+		--password | -p)
+			shift
+			password="$1"
+			shift
+			;;
+		--commit | -c)
+			commit=1
+			shift
+			;;
+		-h | --help)
+			echo "Usage: store set [-r|--recipient <age-recipient>] [-c|--commit] [-e|--encrypt] <key> <value>"
+			echo "main age recipients are always in the recipient list per default"
+			echo "if any recipients are added encryption is enabled by default"
+			return 0
+			;;
+		*)
+			key="$1"
+			value="$2"
+			shift 2
+			;;
+		esac
+	done
+	mkdir -p "$(dirname "$STORE_ROOT_DIR/$key")"
+	if [[ -n "${encrypt:-}" ]]; then
+		if [[ -n "${password:-}" ]]; then
+			info "Using password encryption"
+			printf "%s" "$value" | age -a -P "$password" -r "${recipients[@]}" >"$STORE_ROOT_DIR/$key"
+		else
+			info "Using public key encryption"
+			local age_extra_args=()
+			for recipient in "${recipients[@]}"; do
+				age_extra_args+=("-r" "$recipient")
+			done
+			printf "%s" "$value" | age -a -R ~/.config/age/main_recipients "${age_extra_args[@]}" >"$STORE_ROOT_DIR/$key"
+		fi
+	else
+		printf "%s" "$value" >"$STORE_ROOT_DIR/$key"
+	fi
+	if [[ "${commit:-0}" -eq 1 ]]; then
+		cfg:git add "$STORE_ROOT_DIR/$key"
+		case "$(cfg:git status --short "$STORE_ROOT_DIR/$key" | awk '{ print $1 }')" in
+		A)
+			cfg:git commit -m "added $key to store"
+			;;
+		*)
+			cfg:git commit -m "modified $key in store"
+			;;
+		esac
+	fi
 }
 
-cfg_store_get(){
-  if [[ "$(head -n 1 "$STORE_ROOT_DIR/$1")" = "-----BEGIN PGP MESSAGE-----" ]]; then
-    hash="$(sha256:file "$STORE_ROOT_DIR/$1")"
-    if cache_key_exists "hash-cache/$hash"; then
-      cache_key_get "hash-cache/$hash"
-    else
-      # TODO if gpg key is not available either tell user or request the secret via some other channel
-      if command -v okc-gpg >/dev/null; then
-        result="$(okc-gpg -d < "$STORE_ROOT_DIR/$1" 2>/dev/null)"
-      else
-        result="$(gpg -d < "$STORE_ROOT_DIR/$1" 2>/dev/null)"
-      fi
-      cache_key_set "hash-cache/$hash" "$result"
-      echo "$result"
-    fi
-  else
-    cat "$STORE_ROOT_DIR/$1"
-  fi
+cfg_store_cache_set() {
+	declare key value
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		-h | --help)
+			echo "Usage: store cache set <key> <value>"
+			return 0
+			;;
+		*)
+			key="$1"
+			value="$2"
+			shift 2
+			;;
+		esac
+	done
+	hash="$(sha256:file "$STORE_ROOT_DIR/$key")"
+	cache_key_set "hash-cache/$hash" "$value"
 }
 
-cfg_store(){
-  case "${1:-help}" in
-    get)
-      shift
-      cfg_store_get "$@"
-      ;;
-    set)
-      shift
-      cfg_store_set "$@"
-      ;;
-    rm)
-      shift
-      rm -r "${STORE_ROOT_DIR:?}/${1:?}"
-      ;;
-    ls)
-      if [[ -n "${2:-}" ]]; then
-        ls "$STORE_ROOT_DIR/$2"
-      else
-        tree "$STORE_ROOT_DIR"
-      fi;;
-    exists)
-      shift
-      test -f "$STORE_ROOT_DIR/$1";;
-    help)
-      echo "Available commands:"
-      echo "  get \$path"
-      echo "  set \$path"
-      echo "  rm \$path"
-      echo "  ls \$path"
-      ;;
-    *)
-      echo "Unknown subcommand"
-      exit 1;;
-  esac
+cfg_store_get() {
+	if [[ "$(head -n 1 "$STORE_ROOT_DIR/$1")" = "age-encryption.org/v1" || "$(head -n 1 "$STORE_ROOT_DIR/$1")" = "-----BEGIN AGE ENCRYPTED FILE-----" ]]; then
+		age -d <"$STORE_ROOT_DIR/$1" -i ~/.config/age/me.txt
+	else
+		cat "$STORE_ROOT_DIR/$1"
+	fi
 }
 
+cfg_store() {
+	case "${1:-help}" in
+	get)
+		shift
+		cfg_store_get "$@"
+		;;
+	cset)
+		shift
+		cfg_store_cache_set "$@"
+		;;
+	set)
+		shift
+		cfg_store_set "$@"
+		;;
+	rm)
+		shift
+		rm -r "${STORE_ROOT_DIR:?}/${1:?}"
+		;;
+	ls)
+		find "$HOME/.config/store/${2:-}" -type f -printf "%P\n"
+		;;
+	exists)
+		shift
+		test -f "$STORE_ROOT_DIR/$1"
+		;;
+	help)
+		echo "Available commands:"
+		echo "  get \$path"
+		echo "  set \$path"
+		echo "  rm \$path"
+		echo "  ls \$path"
+		;;
+	*)
+		echo "Unknown subcommand"
+		exit 1
+		;;
+	esac
+}
 
 ##################################### Sync and Git funcs ###############################
-apply-commit(){
-  commit=${1:-$(cfg:git rev-parse --abbrev-ref HEAD)}
-  parents="$(cfg cat-file -p "$commit" | head -n 3 | grep -cE '^parent [a-z0-9]{40}$')"
-  if [[ $parents -gt 1 ]]; then
-    echo "Detected merge commit, defaulting to merging using first parent (-m 1)"
-  fi
-  target=${2:-""}
-  IFS='.' read -ra branch_path <<< "$(cfg:git rev-parse --abbrev-ref HEAD)"
-  branch_count=${#branch_path[@]}
-  max="$((branch_count - 2))"
-  # Iterate over the branch array in reverse, starting from the one before the last
-  for ((i = max; i >= 0; i--)); do
-    branch=$(join_elements "$i" "${branch_path[@]}")
-    if test "$i" = "$max"; then
-      child="$commit"
-    else
-      child=$(join_elements "$((i+1))" "${branch_path[@]}")
-    fi
-    cd "$(get_worktree_dir "$branch")"
-    if [[ $parents -gt 1 ]]; then
-      echo "cherry-picking merge in $branch"
-      git cherry-pick -m 1 "$child"
-    else
-      echo "cherry-picking in $branch"
-      git cherry-pick "$child"
-    fi || (echo "Cherry picking encountered a problem, exit shell when it is fixed" && "${SHELL:-bash}")
-    if test "$branch" = "$target"; then
-      break
-    fi
-  done
-  cd
-  cfg:git push --all || error "Error during pushing, commits where applied though"
+apply-commit() {
+	commit=${1:-$(cfg:git rev-parse --abbrev-ref HEAD)}
+	parents="$(cfg cat-file -p "$commit" | head -n 3 | grep -cE '^parent [a-z0-9]{40}$')"
+	if [[ $parents -gt 1 ]]; then
+		echo "Detected merge commit, defaulting to merging using first parent (-m 1)"
+	fi
+	target=${2:-""}
+	IFS='.' read -ra branch_path <<<"$(cfg:git rev-parse --abbrev-ref HEAD)"
+	branch_count=${#branch_path[@]}
+	max="$((branch_count - 2))"
+	# Iterate over the branch array in reverse, starting from the one before the last
+	for ((i = max; i >= 0; i--)); do
+		branch=$(join_elements "$i" "${branch_path[@]}")
+		if test "$i" = "$max"; then
+			child="$commit"
+		else
+			child=$(join_elements "$((i + 1))" "${branch_path[@]}")
+		fi
+		cd "$(get_worktree_dir "$branch")"
+		if [[ $parents -gt 1 ]]; then
+			echo "cherry-picking merge in $branch"
+			git cherry-pick -m 1 "$child"
+		else
+			echo "cherry-picking in $branch"
+			git cherry-pick "$child"
+		fi || (echo "Cherry picking encountered a problem, exit shell when it is fixed" && "${SHELL:-bash}")
+		if test "$branch" = "$target"; then
+			break
+		fi
+	done
+	cd
+	cfg:git push --all || error "Error during pushing, commits where applied though"
 }
 
-cfg_sync(){
-  # TODO check commit signatures before using any scripts
-  # Environment should already be loaded here
-  #head_before_sync="$(cfg_git rev-parse HEAD)"
-  echo "===> Starting cfg Sync @[$(date --iso-8601=seconds)]"
-  if type -v systemctl >/dev/null 2>&1; then
-    ( (systemctl --user --failed | grep -oP '(?<=^● ).*') || true) > ~/.cache/systemd-failed-user-services 2>&1
-  fi
-  cfg fetch || error "Fetch failed (No internet connection?)"
-  IFS='.' read -ra branch_path <<< "$(cfg rev-parse --abbrev-ref HEAD)"
-  branch_count=${#branch_path[@]}
-  sources=("${branch_path[@]:0:$((branch_count-1))}") # Use array slicing to get all but the last element
-  echo "Processing parent branches:"
-  for index in "${!sources[@]}"; do
-    branch=$(join_elements "$index" "${branch_path[@]}")
-    echo "[$index] Merging $branch..."
-    cd "$(get_worktree_dir "$branch")"
-    git merge "origin/$branch" --no-edit --autostash
-    if test "$index" -gt 0; then
-      previous_branch="${branch_path[$((index-1))]}"
-      git merge "$previous_branch" --no-edit --autostash
-    fi
-  done
-  echo "Processing active branch:"
-  main_branch="$(cfg rev-parse --abbrev-ref HEAD)"
-  echo "Merging origin/$main_branch into $main_branch"
-  cfg merge "origin/$main_branch" --no-edit --autostash
-  if test "$branch_count" -gt 1; then
-    branch=$(join_elements "$((branch_count-2))" "${branch_path[@]}")
-    echo "Merging $branch into $main_branch"
-    cfg merge "$branch" --no-edit --autostash
-  fi
-  echo "Finished merging, starting pushing..."
-  cfg push --all
-  if test -f ~/.glyph/.main; then
-    echo "===> Starting Glyph Sync @[$(date --iso-8601=seconds)]"
-    ~/.glyph/.main sync
-  fi
-
-  #echo "===> Generating ssh authorized_keys file from allowed_signers @[$(date --iso-8601=seconds)]"
-  # TODO replace this with a call to ssh-sigchain once its ready
-  # ssh:authorized_keys:generate
+cfg_sync() {
+	# TODO check commit signatures before using any scripts
+	# Environment should already be loaded here
+	local head_before_sync head_after_sync branch_path branch_count sources main_branch previous_branch index
+	#head_before_sync="$(cfg rev-parse HEAD)"
+	echo "===> Starting cfg Sync @[$(date --iso-8601=seconds)]"
+	if type -v systemctl >/dev/null 2>&1; then
+		( (systemctl --user --failed | grep -oP '(?<=^● ).*') || true) >~/.cache/systemd-failed-user-services 2>&1
+	fi
+	cfg:git fetch || error "Fetch failed (No internet connection?)"
+	IFS='.' read -ra branch_path <<<"$(cfg rev-parse --abbrev-ref HEAD)"
+	branch_count=${#branch_path[@]}
+	sources=("${branch_path[@]:0:$((branch_count - 1))}") # Use array slicing to get all but the last element
+	echo "Processing parent branches:"
+	for index in "${!sources[@]}"; do
+		branch=$(join_elements "$index" "${branch_path[@]}")
+		echo "[$index] Merging $branch..."
+		cd "$(get_worktree_dir "$branch")"
+		git merge "origin/$branch" --no-edit --autostash
+		if test "$index" -gt 0; then
+			previous_branch="${branch_path[$((index - 1))]}"
+			git merge "$previous_branch" --no-edit --autostash
+		fi
+		cd
+	done
+	echo "Processing active branch:"
+	main_branch="$(cfg:git rev-parse --abbrev-ref HEAD)"
+	echo "Merging origin/$main_branch into $main_branch"
+	cfg:git merge "origin/$main_branch" --no-edit --autostash
+	if test "$branch_count" -gt 1; then
+		branch=$(join_elements "$((branch_count - 2))" "${branch_path[@]}")
+		echo "Merging $branch into $main_branch"
+		cfg:git merge "$branch" --no-edit --autostash
+	fi
+	echo "Finished merging, starting pushing..."
+	#head_after_sync="$(cfg rev-parse HEAD)"
+	local upstream_hash local_hash
+	upstream_hash="$(cfg:git rev-parse "$(cfg:git rev-parse --abbrev-ref 'HEAD@{u}')")"
+	local_hash="$(cfg:git rev-parse HEAD)"
+	if [[ "$upstream_hash" != "$local_hash" ]]; then
+		cfg:git push --all
+	else
+		echo "No push needed"
+	fi
+	# if test -f ~/.glyph/.main; then
+	# 	echo "===> Starting Glyph Sync @[$(date --iso-8601=seconds)]"
+	# 	~/.glyph/.main sync
+	# fi
+	# if test -d ~/arch; then
+	# 	echo "===> Starting Git Annex Sync @[$(date --iso-8601=seconds)]"
+	# 	cd ~/arch
+	# 	git annex sync --content
+	# 	cd -
+	# fi
+	#echo "===> Generating ssh authorized_keys file from allowed_signers @[$(date --iso-8601=seconds)]"
+	# TODO replace this with a call to ssh-sigchain once its ready
+	# ssh:authorized_keys:generate
+	echo "===> Starting repos sync @[$(date --iso-8601=seconds)]"
+	(find . -mindepth 2 -maxdepth 2 -type d -name .git -exec dirname '{}' \;) | while read -r repo; do
+		echo "---> Syncing $repo @[$(date --iso-8601=seconds)]"
+		cd "$HOME/$repo"
+		if [[ -f .main.sync ]]; then
+			run ./.main.sync
+		else
+			echo "Skipping syncing $repo, no .main.sync file found"
+		fi
+		cd
+	done
+	echo "===> Sync finished @[$(date --iso-8601=seconds)]"
 }
 
 ##################################### Vars ###################################
-vars_print_var(){
-  case "${VAR_EXPORT_MODE:-posix}" in
-    posix)
-      echo "export $1=\"$2\";";;
-    fish)
-      echo "set -x $1 \"$2\";";;
-    *)
-      error "Unknown VAR_EXPORT_MODE: ${VAR_EXPORT_MODE:-posix}";;
-  esac
-  declare "$1"="$2"
+vars_print_var() {
+	case "${VAR_EXPORT_MODE:-posix}" in
+	posix)
+		echo "export $1=\"$2\";"
+		;;
+	fish)
+		echo "set -x $1 \"$2\";"
+		;;
+	*)
+		error "Unknown VAR_EXPORT_MODE: ${VAR_EXPORT_MODE:-posix}"
+		;;
+	esac
+	declare "$1"="$2"
 }
 
-handle_ssh_agent_startup(){
-  if [[ -z "${GPG_TTY:-}" ]]; then
-    GPG_TTY="$(tty)" || true
-    export GPG_TTY
-    vars_print_var GPG_TTY "$GPG_TTY"
-  fi
-  log "Using gpg-agent"
-  if command -v okc-ssh-agent >/dev/null; then
-    if [[ -f "$HOME/.cache/okc-ssh-agent.env" ]]; then
-      eval "$(okc-ssh-agent)" >/dev/null 2>&1
-      # TODO bind to a static socket instead of generating a new one per session
-    else
-      warning "okc-ssh-agent is available but no env file found"
-    fi
-    if command -v gpg-connect-agent >/dev/null; then
-      result="$(echo UPDATESTARTUPTTY | gpg-connect-agent 2>/dev/null)"
-      if [[ "$result" != "OK" ]]; then
-        warning "Failed to update gpg-agent's TTY:"
-      fi
-    fi
-  elif command -v gpgconf >/dev/null; then
-    SSH_AUTH_SOCK="$(gpgconf --list-dirs agent-ssh-socket)"
-    export SSH_AUTH_SOCK
-    result="$(echo UPDATESTARTUPTTY | gpg-connect-agent 2>/dev/null)"
-    if [[ "$result" != "OK" ]]; then
-      warning "Failed to update gpg-agent's TTY:"
-    fi
-  elif [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
-    log "Using existing ssh-agent"
-    status=0
-    timeout 0.3 ssh-add -l > /dev/null 2>&1 || status=$?
-    if [[ ! "$status" -eq 2 ]]; then
-      return
-    fi
-    log "ssh-agent is dead, NOT starting new one"
-  elif [[ -n "${XDG_RUNTIME_DIR:-}" && -S "$XDG_RUNTIME_DIR/gcr/.ssh" ]]; then
-    log "Using gnome keyring ssh-agent"
-    export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/gcr/.ssh"
-  else
-    # Finally try starting own agent
-    log "Starting new ssh-agent"
-    eval "$(ssh-agent -s)" >/dev/null # TODO replace this later with static/dynamic approach
-  fi
-  vars_print_var SSH_AUTH_SOCK "$SSH_AUTH_SOCK"
-  if [[ -n "${SSH_AGENT_PID:-}" ]]; then
-    vars_print_var SSH_AGENT_PID "$SSH_AGENT_PID"
-  fi
+handle_ssh_agent_startup() {
+	if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
+		vars_print_var SSH_AUTH_SOCK "$SSH_AUTH_SOCK"
+		return 0
+	fi
+	# if [[ -z "${GPG_TTY:-}" ]]; then
+	# 	GPG_TTY="$(tty)" || true
+	# 	export GPG_TTY
+	# 	vars_print_var GPG_TTY "$GPG_TTY"
+	# fi
+	# log "Using gpg-agent"
+	# if command -v okc-ssh-agent >/dev/null; then
+	# 	if [[ -f "$HOME/.cache/okc-ssh-agent.env" ]]; then
+	# 		eval "$(okc-ssh-agent)" >/dev/null 2>&1
+	# 		# TODO bind to a static socket instead of generating a new one per session
+	# 	else
+	# 		warning "okc-ssh-agent is available but no env file found"
+	# 	fi
+	# 	if command -v gpg-connect-agent >/dev/null; then
+	# 		result="$(echo UPDATESTARTUPTTY | gpg-connect-agent 2>/dev/null)"
+	# 		if [[ "$result" != "OK" ]]; then
+	# 			warning "Failed to update gpg-agent's TTY:"
+	# 		fi
+	# 	fi
+	# elif command -v gpgconf >/dev/null; then
+	# 	SSH_AUTH_SOCK="$(gpgconf --list-dirs agent-ssh-socket)"
+	# 	export SSH_AUTH_SOCK
+	# 	result="$(echo UPDATESTARTUPTTY | gpg-connect-agent 2>/dev/null)"
+	# 	if [[ "$result" != "OK" ]]; then
+	# 		warning "Failed to update gpg-agent's TTY:"
+	# 	fi
+	if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
+		log "Using existing ssh-agent"
+		status=0
+		timeout 0.3 ssh-add -l >/dev/null 2>&1 || status=$?
+		if [[ ! "$status" -eq 2 ]]; then
+			return
+		fi
+		log "ssh-agent is dead, NOT starting new one"
+	elif [[ -n "${XDG_RUNTIME_DIR:-}" && -S "$XDG_RUNTIME_DIR/gcr/.ssh" ]]; then
+		log "Using gnome keyring ssh-agent"
+		export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/gcr/.ssh"
+	else
+		# Finally try starting own agent
+		log "Starting new ssh-agent"
+		eval "$(ssh-agent -s)" >/dev/null # TODO replace this later with static/dynamic approach
+	fi
+
+	vars_print_var SSH_AUTH_SOCK "$SSH_AUTH_SOCK"
+	if [[ -n "${SSH_AGENT_PID:-}" ]]; then
+		vars_print_var SSH_AGENT_PID "$SSH_AGENT_PID"
+	fi
 }
 
 cert_path="$HOME/.ssh/id_ed25519-cert.pub"
-ssh:cert:time_remaining(){
-  cert_expiry_secs="$(date --date "$(ssh-keygen -L -f "$cert_path" | grep 'Valid: from' | grep -oP '(?<= to ).*$')" +%s)"
-  now_secs="$(date +%s)"
-  remaining_secs="$((cert_expiry_secs - now_secs))"
-  echo "$remaining_secs"
+ssh:cert:time_remaining() {
+	cert_expiry_secs="$(date --date "$(ssh-keygen -L -f "$cert_path" | grep 'Valid: from' | grep -oP '(?<= to ).*$')" +%s)"
+	now_secs="$(date +%s)"
+	remaining_secs="$((cert_expiry_secs - now_secs))"
+	echo "$remaining_secs"
 }
 
 # ssh:add-keys(){
@@ -604,294 +726,427 @@ ssh:cert:time_remaining(){
 #   ssh:add-keys
 # }
 
-vars_export(){
-  VAR_EXPORT_MODE="posix"
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      -h|--help)
-        echo "Usage: export [options]"
-        echo "  --shell - set the shell for which to export the vars"
-        echo "            valid values are: posix, fish"
-        return 0
-        ;;
-      --shell)
-        VAR_EXPORT_MODE="$2"
-        shift 2
-        ;;
-      *)
-        echo "Unknown argument: $1"
-        return 1
-        ;;
-    esac
-  done
-  if ! test -f "$CACHE_ROOT_DIR.vars/NODE_NAME"; then
-    mkdir -p "$CACHE_ROOT_DIR.vars"
-    if command -v hostnamectl >/dev/null 2>&1; then
-      hostnamectl hostname > "$CACHE_ROOT_DIR.vars/NODE_NAME"
-    else
-      hostname > "$CACHE_ROOT_DIR.vars/NODE_NAME"
-    fi
-  fi
-  for file in "$CACHE_ROOT_DIR.vars"/*; do
-    vars_print_var "$(basename "$file")" "$(cat "$file")"
-  done
-  handle_ssh_agent_startup
-  #ssh_agent_ensure_keys_loaded >&2
+vars_export() {
+	VAR_EXPORT_MODE="posix"
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		-h | --help)
+			echo "Usage: export [options]"
+			echo "  --shell - set the shell for which to export the vars"
+			echo "            valid values are: posix, fish"
+			return 0
+			;;
+		--shell)
+			VAR_EXPORT_MODE="$2"
+			shift 2
+			;;
+		*)
+			echo "Unknown argument: $1"
+			return 1
+			;;
+		esac
+	done
+	if ! test -f "$CACHE_ROOT_DIR.vars/NODE_NAME"; then
+		mkdir -p "$CACHE_ROOT_DIR.vars"
+		if command -v hostnamectl >/dev/null 2>&1; then
+			hostnamectl hostname >"$CACHE_ROOT_DIR.vars/NODE_NAME"
+		else
+			hostname >"$CACHE_ROOT_DIR.vars/NODE_NAME"
+		fi
+	fi
+	
+	# XDG Base Directory Specification
+	export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+	vars_print_var XDG_CACHE_HOME "$XDG_CACHE_HOME"
+	export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+	vars_print_var XDG_CONFIG_HOME "$XDG_CONFIG_HOME"
+	export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+	vars_print_var XDG_DATA_HOME "$XDG_DATA_HOME"
+	export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+	vars_print_var XDG_RUNTIME_DIR "$XDG_RUNTIME_DIR"
+	export XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+	vars_print_var XDG_STATE_HOME "$XDG_STATE_HOME"
+	
+	# Setup crypto keys
+	export NOSTR_MAIN_PUBKEY="npub17n6hdtyqun7m703h8gmf3mx8l2rzyfpwvtrl9ttrjvevxyqwexcsgvhnu9"
+	vars_print_var NOSTR_MAIN_PUBKEY "$NOSTR_MAIN_PUBKEY"
+
+	# Static Config for all my Nodes
+	## General path setup (to be replaced with better system in the future TODO)
+	export PATH="$HOME/.local/bin:$HOME/.config/scripts:$HOME/.config/scripts.old:$HOME/.config/git-scripts:$HOME/.config/bin:$HOME/.luarocks/bin:$HOME/.deno/bin:$HOME/.cargo/bin:$HOME/.local/go/bin:$HOME/.go/bin:$PATH:/home/linuxbrew/.linuxbrew/bin"
+	
+	## Golang Config
+	export GOPATH="$HOME/.go"
+	
+	## Lua Config
+	export LUA_PATH="./?.lua;./?/init.lua;$HOME/.config/lua/5.4/?.lua;$HOME/.config/lua/5.4/?/init.lua;$HOME/.luarocks/share/lua/5.4/?.lua;$HOME/.luarocks/share/lua/5.4/?/init.lua;/usr/share/lua/5.4/?/init.lua;/usr/share/lua/5.4/?.lua;"
+	vars_print_var LUA_PATH "$LUA_PATH"
+	export LUA_CPATH="./?.lua;$HOME/.config/lua/5.4/?.so;$HOME/.luarocks/lib/lua/5.4/?.so;/usr/lib/lua/5.4/?.so;/usr/lib/lua/5.4/loadall.so;./?.so"
+	vars_print_var LUA_CPATH "$LUA_CPATH"
+
+	## Fennel configuration
+	export FENNEL_PATH="./?.fnl;./?/init.fnl;$HOME/.config/fennel/share/?.fnl;$HOME/.config/fennel/share/?/init.fnl"
+	vars_print_var FENNEL_PATH "$FENNEL_PATH"
+
+	## Janet configuration
+	export JANET_PATH="$HOME/.local/lib"
+	vars_print_var JANET_PATH "$JANET_PATH"
+	export JANET_HEADERPATH="$HOME/.local/include/janet"
+	vars_print_var JANET_HEADERPATH "$JANET_HEADERPATH"
+	export JANET_LIBPATH="$HOME/.local/lib"
+	vars_print_var JANET_LIBPATH "$JANET_LIBPATH"
+	export JANET_BINPATH="$HOME/.local/bin"
+	vars_print_var JANET_BINPATH "$JANET_BINPATH"
+	export JANET_PROFILE="$HOME/.config/janet/profile.janet"
+	vars_print_var JANET_PROFILE "$JANET_PROFILE"
+
+	## Define hosts override
+	export HOSTALIASES="$HOME/.hosts"
+	vars_print_var HOSTALIASES "$HOSTALIASES"
+	export HOSTFILE="$HOSTALIASES"
+	vars_print_var HOSTFILE "$HOSTFILE"
+
+	## MISC applications
+	export ELINKS_CONFDIR="$XDG_CONFIG_HOME/elinks"
+	vars_print_var ELINKS_CONFDIR "$ELINKS_CONFDIR"
+	export LESSHISTFILE="$XDG_CACHE_HOME/less/history"
+	vars_print_var LESSHISTFILE "$LESSHISTFILE"
+	export NB_DIR="$XDG_DATA_HOME/nb"
+	vars_print_var NB_DIR "$NB_DIR"
+	export TSS2_LOG="fapi+NONE"
+	vars_print_var TSS2_LOG "$TSS2_LOG"
+	export NODE_REPL_HISTORY="$XDG_DATA_HOME/node_repl_history"
+	vars_print_var NODE_REPL_HISTORY "$NODE_REPL_HISTORY"
+	export PSQL_HISTORY="$XDG_DATA_HOME/psql_history"
+	vars_print_var PSQL_HISTORY "$PSQL_HISTORY"
+	export SQLITE_HISTORY="$XDG_CACHE_HOME/sqlite_history"
+	vars_print_var SQLITE_HISTORY "$SQLITE_HISTORY"
+	export ZDOTDIR="$XDG_CONFIG_HOME/zsh"
+	vars_print_var ZDOTDIR "$ZDOTDIR"
+	export SHOW_SSH_CERT=1
+	vars_print_var SHOW_SSH_CERT "$SHOW_SSH_CERT"
+	export RCLONE_FAST_LIST=1
+	vars_print_var RCLONE_FAST_LIST "$RCLONE_FAST_LIST"
+	export IDENTIFY="tionis <me@tionis.dev>"
+	vars_print_var IDENTIFY "$IDENTIFY"
+
+	## Ollama configuration
+	export OLLAMA_ORIGINS="http://127.0.0.1*,http://localhost*,app://obsidian.md*"
+	vars_print_var OLLAMA_ORIGINS "$OLLAMA_ORIGINS"
+	export OLLAMA_HOST="127.0.0.1:11434"
+	vars_print_var OLLAMA_HOST "$OLLAMA_HOST"
+
+  # Hedgedoc config
+ 	export HEDGEDOC_SERVER='https://md.tionis.dev'
+ 	vars_print_var HEDGEDOC_SERVER "$HEDGEDOC_SERVER"
+	export HEDGEDOC_COOKIES_FILE=/home/eric/.config/hedgedoc/key.conf
+	vars_print_var HEDGEDOC_COOKIES_FILE "$HEDGEDOC_COOKIES_FILE"
+
+	for file in "$CACHE_ROOT_DIR.vars"/*; do
+		# TODO load from one central file for performance?
+		vars_print_var "$(basename "$file")" "$(cat "$file")"
+	done
+	# TODO check another dir for additional dirs to add to path
+	# TODO deduplicate path entries
+	vars_print_var PATH "$PATH"
+	handle_ssh_agent_startup
+	#ssh_agent_ensure_keys_loaded >&2
 }
 
-cfg_vars(){
-  case "${1:-help}" in
-    export)
-      shift || true
-      vars_export "$@";;
-    set)
-      shift || true
-      mkdir -p "$CACHE_ROOT_DIR.vars"
-      echo "$2" > "$CACHE_ROOT_DIR.vars/$1";;
-    rm)
-      shift || true
-      rm -r "$CACHE_ROOT_DIR.vars/$1";;
-    ls)
-      ls "$CACHE_ROOT_DIR.vars";;
-    help)
-      echo "Available Subcommands:"
-      echo " set \$key \$value - set a env var to a value"
-      echo " rm \$key - remove an env var"
-      echo " export - export static and dynamic vars"
-  esac
+cfg_vars() {
+	case "${1:-help}" in
+	export)
+		shift || true
+		vars_export "$@"
+		;;
+	set)
+		shift || true
+		mkdir -p "$CACHE_ROOT_DIR.vars"
+		echo "$2" >"$CACHE_ROOT_DIR.vars/$1"
+		;;
+	rm)
+		shift || true
+		rm -r "$CACHE_ROOT_DIR.vars/$1"
+		;;
+	ls)
+		ls "$CACHE_ROOT_DIR.vars"
+		;;
+	help)
+		echo "Available Subcommands:"
+		echo " set \$key \$value - set a env var to a value"
+		echo " rm \$key - remove an env var"
+		echo " export - export static and dynamic vars"
+		;;
+	esac
 }
-
 
 ##################################### SSH ###################################
-ssh:authorized_keys:generate(){ # TODO replace with call to ssh-sigchain like e.g. ssh-sigchain get_authorized_keys tionis.dev
-  trust_anchor="*tionis.dev,*tasadar.net,*wendland.dev,*construct-rpg.net valid-after=\"20221007\" ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDU1dl1LIBDFZ5aKALIUGdUHB70VuBqGH2+BbLvioaUWBnDCSB8mrr75EY1FpyxDIW7q/Gvc43wnc2bLXuGyLEY78gm7chBzVcajJCST7Dq8TNiezp4mnBagRixreMBk8M29ld9p6J6aGejbysc8vLta3xXnYmRKfWeZKayegtIm3/KciLvPuK4+UrMiKO0fC17wukuqUvDZVklDeFBFLSO/lee7oPvTI5f/KBeVF0rs21ZSDKZN+8Q7VPIohI/xVlCvdEyqDTICOUKroaAPGa1/1NkSd4fe5F02C5h7WChHad8btWNSu8nTP86KUAOFOYa8UUpoaHt2GuUCU87pHosQ08tTijAAx8bDyq2KdnJl9kgXh/2LaRnu3/DJDQXBJpV821Gyzt8hlqXA0cdrbyE6x13yIA+Ta1WXlR2Igzai3UOTkLL6POJBCOycO4dxd9fS7l8WNic6TIQmQDl2ecUECgSYWvBH2TJiltCUQEy0V2Rx8I28RvtuyzkmGbR4Tz5mQiwEuk0dyxRCoct6z9CpC9FSZRiXH7+qUHlaleZLEI6EYqMWFMj0VncQ3ddklEEzEOP9weUWvdgIWy8woCQuZ/YuW4lNS2Qt25jqFgv9XVddzsTDdSt1GFsdDnyHyhrnaSf0bayYtCo2849GI/QKR3dvjGogpYz/5jspxZZEQ== pgp.tionis.dev"
-  if ! ssh-keygen -Y verify -f <(echo "$trust_anchor") -n allowed_signers -s ~/.ssh/allowed_signers.sig -I tionis.dev < "$HOME/.ssh/allowed_signers"; then
-    error "Failed to verify signature of allowed_signers file using static trust_anchor"
-  fi
-  authorized_principals="$(cfg cache get ssh/authorized_principals || (cfg cache set ssh/authorized_principals "tionis.dev,$NODE_NAME.tionis.dev"; printf "tionis.dev,%s.tionis.dev" "$NODE_NAME"))"
-  ssh:authorized_keys_from_allowed_signers --principals "$authorized_principals" # TODO replace janet?
+ssh:authorized_keys:generate() { # TODO replace with call to ssh-sigchain like e.g. ssh-sigchain get_authorized_keys tionis.dev
+	trust_anchor="*tionis.dev,*tasadar.net,*wendland.dev,*construct-rpg.net valid-after=\"20221007\" ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDU1dl1LIBDFZ5aKALIUGdUHB70VuBqGH2+BbLvioaUWBnDCSB8mrr75EY1FpyxDIW7q/Gvc43wnc2bLXuGyLEY78gm7chBzVcajJCST7Dq8TNiezp4mnBagRixreMBk8M29ld9p6J6aGejbysc8vLta3xXnYmRKfWeZKayegtIm3/KciLvPuK4+UrMiKO0fC17wukuqUvDZVklDeFBFLSO/lee7oPvTI5f/KBeVF0rs21ZSDKZN+8Q7VPIohI/xVlCvdEyqDTICOUKroaAPGa1/1NkSd4fe5F02C5h7WChHad8btWNSu8nTP86KUAOFOYa8UUpoaHt2GuUCU87pHosQ08tTijAAx8bDyq2KdnJl9kgXh/2LaRnu3/DJDQXBJpV821Gyzt8hlqXA0cdrbyE6x13yIA+Ta1WXlR2Igzai3UOTkLL6POJBCOycO4dxd9fS7l8WNic6TIQmQDl2ecUECgSYWvBH2TJiltCUQEy0V2Rx8I28RvtuyzkmGbR4Tz5mQiwEuk0dyxRCoct6z9CpC9FSZRiXH7+qUHlaleZLEI6EYqMWFMj0VncQ3ddklEEzEOP9weUWvdgIWy8woCQuZ/YuW4lNS2Qt25jqFgv9XVddzsTDdSt1GFsdDnyHyhrnaSf0bayYtCo2849GI/QKR3dvjGogpYz/5jspxZZEQ== pgp.tionis.dev"
+	if ! ssh-keygen -Y verify -f <(echo "$trust_anchor") -n allowed_signers -s ~/.ssh/allowed_signers.sig -I tionis.dev <"$HOME/.ssh/allowed_signers"; then
+		error "Failed to verify signature of allowed_signers file using static trust_anchor"
+	fi
+	authorized_principals="$(cfg cache get ssh/authorized_principals || (
+		cfg cache set ssh/authorized_principals "tionis.dev,$NODE_NAME.tionis.dev"
+		printf "tionis.dev,%s.tionis.dev" "$NODE_NAME"
+	))"
+	ssh:authorized_keys_from_allowed_signers --principals "$authorized_principals" # TODO replace janet?
 }
 
-cfg_ssh(){
-  case "${1:-help}" in
-    help)
-      echo "Available commands:"
-      echo "  help - show this help"
-      echo "  authorized_keys:generate - generate the authorized_keys file from allowed_signers"
-      echo "  set_principals \$comma_separated_principals - set the principals that have access to this machine"
-      echo "  get_principals - get the principals that have access to this machine"
-      return 0
-      ;;
-    authorized_keys:generate)
-      ssh:authorized_keys:generate
-      ;;
-    set_principals)
-      shift || true
-      if test -z "$1"; then
-        error "No principals provided"
-      fi
-      cfg cache set ssh/authorized_principals "$1"
-      ;;
-    get_principals)
-      cfg cache get ssh/authorized_principals || (cfg cache set ssh/authorized_principals "tionis.dev,$NODE_NAME.tionis.dev"; printf "tionis.dev,%s.tionis.dev" "$NODE_NAME")
-      ;;
-    *)
-      echo "Unknown subcommand"
-      exit 1;;
-  esac
+cfg_ssh() {
+	case "${1:-help}" in
+	help)
+		echo "Available commands:"
+		echo "  help - show this help"
+		echo "  authorized_keys:generate - generate the authorized_keys file from allowed_signers"
+		echo "  set_principals \$comma_separated_principals - set the principals that have access to this machine"
+		echo "  get_principals - get the principals that have access to this machine"
+		return 0
+		;;
+	authorized_keys:generate)
+		ssh:authorized_keys:generate
+		;;
+	set_principals)
+		shift || true
+		if test -z "$1"; then
+			error "No principals provided"
+		fi
+		cfg cache set ssh/authorized_principals "$1"
+		;;
+	get_principals)
+		cfg cache get ssh/authorized_principals || (
+			cfg cache set ssh/authorized_principals "tionis.dev,$NODE_NAME.tionis.dev"
+			printf "tionis.dev,%s.tionis.dev" "$NODE_NAME"
+		)
+		;;
+	*)
+		echo "Unknown subcommand"
+		exit 1
+		;;
+	esac
 }
 
 #################################### Util ###################################
-cfg_use_deploy_key(){
-  declare git_dir sshCommand
-  git_dir="$(cfg:git rev-parse --absolute-git-dir)"
-  if [[ ! -f "$git_dir/id_ed25519" ]]; then
-    ssh-keygen -t ed25519 -f "$git_dir/id_ed25519" -N ""
-    warning "Deploy key created, please add it to the repository's deploy keys"
-    cat "$git_dir/id_ed25519.pub"
-  fi
-  sshCommand+="SSH_AUTH_SOCK= "
-  sshCommand+="ssh -i '${git_dir//\'/\'\"\'\"\'}/id_ed25519'"
-  sshCommand+=" -o 'IdentitiesOnly=yes'"
-  sshCommand+=" -o 'ControlPath=${git_dir//\'/\'\"\'\"\'}/ssh_control'"
-  cfg:git config core.sshCommand "$sshCommand"
-  success "Now using custom ssh key for git"
+cfg_use_deploy_key() {
+	declare git_dir sshCommand
+	git_dir="$(cfg:git rev-parse --absolute-git-dir)"
+	if [[ ! -f "$git_dir/id_ed25519" ]]; then
+		ssh-keygen -t ed25519 -f "$git_dir/id_ed25519" -N ""
+		warning "Deploy key created, please add it to the repository's deploy keys"
+		cat "$git_dir/id_ed25519.pub"
+	fi
+	sshCommand+="SSH_AUTH_SOCK= "
+	sshCommand+="ssh -i '${git_dir//\'/\'\"\'\"\'}/id_ed25519'"
+	sshCommand+=" -o 'IdentitiesOnly=yes'"
+	sshCommand+=" -o 'ControlPath=${git_dir//\'/\'\"\'\"\'}/ssh_control'"
+	cfg:git config core.sshCommand "$sshCommand"
+	success "Now using custom ssh key for git"
 }
 
-cfg_gpg_get-auth-keygrip(){
-  gpg --list-keys --with-keygrip "$1" | grep -A 1 ' \[.*A.*\]' | grep -oP '(?<=Keygrip = ).*'
+#cfg_gpg_get-auth-keygrip() {
+#	gpg --list-keys --with-keygrip "$1" | grep -A 1 ' \[.*A.*\]' | grep -oP '(?<=Keygrip = ).*'
+#}
+
+cfg::has/systemd() {
+	case "$HAS_SYSTEMD" in
+	true)
+		return 0
+		;;
+	false)
+		return 1
+		;;
+	*)
+		if command -v systemctl >/dev/null; then
+			HAS_SYSTEMD=true
+			return 0
+		else
+			HAS_SYSTEMD=false
+			return 1
+		fi
+		;;
+	esac
 }
 
-cfg::has/systemd(){
-  case "$HAS_SYSTEMD" in
-    true)
-      return 0;;
-    false)
-      return 1;;
-    *)
-      if command -v systemctl >/dev/null; then
-        HAS_SYSTEMD=true
-        return 0
-      else
-        HAS_SYSTEMD=false
-        return 1
-      fi
-      ;;
-  esac
+cfg::system/systemctl/enable/now() { # only enables service if needed
+	if ! systemctl is-enabled --quiet "$1"; then
+		sudo systemctl enable --now "$1"
+	fi
+}
+cfg::system/systemctl/disable/now() { # only disables service if needed
+	if systemctl is-enabled --quiet "$1"; then
+		sudo systemctl disable --now "$1"
+	fi
+}
+cfg::user/systemctl/enable/now() { # only enables service if needed
+	if ! systemctl --user is-enabled --quiet "$1"; then
+		systemctl --user enable --now "$1"
+	fi
+}
+cfg::user/systemctl/disable/now() { # only disables service if needed
+	if systemctl --user is-enabled --quiet "$1"; then
+		systemctl --user disable --now "$1"
+	fi
 }
 
-cfg::system/systemctl/enable/now(){ # only enables service if needed
-  if ! systemctl is-enabled --quiet "$1"; then
-    sudo systemctl enable --now "$1";
-  fi
-}
-cfg::system/systemctl/disable/now(){ # only disables service if needed
-  if systemctl is-enabled --quiet "$1"; then
-    sudo systemctl disable --now "$1";
-  fi
-}
-cfg::user/systemctl/enable/now(){ # only enables service if needed
-  if ! systemctl --user is-enabled --quiet "$1"; then
-    systemctl --user enable --now "$1";
-  fi
-}
-cfg::user/systemctl/disable/now(){ # only disables service if needed
-  if systemctl --user is-enabled --quiet "$1"; then
-    systemctl --user disable --now "$1";
-  fi
+cfg_setup() {
+	cfg_use_deploy_key
+	if cfg::has/systemd; then
+		cfg::user/systemctl/enable/now "sync.timer"
+	fi
+	echo "Setting up keys..."
+	if [[ ! -f ~/.ssh/id_ed25519 ]]; then
+		ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
+	fi
+	if [[ ! -f ~/.config/age/me.txt ]]; then
+		age-keygen -o ~/.config/age/me.txt
+	fi
 }
 
-cfg_setup(){
-  cfg_use_deploy_key
-  if cfg::has/systemd; then
-    cfg::user/systemctl/enable/now "sync.timer"
-  fi
-  # setup local gpg key if not already done
-  # if ! gpg --list-keys "$NODE_NAME@tionis.dev" >/dev/null 2>&1; then
-  #   echo "[Choose a Password for the per-machine gpg key]"
-  #   local passphrase
-  #   if command -v systemd-ask-password >/dev/null; then
-  #     passphrase="$(systemd-ask-password)"
-  #   else
-  #     read -r -s -p "Password: " passphrase
-  #   fi
-  #   gpg --batch --gen-key <(echo "Key-Type: eddsa";
-  #                           echo "Key-Curve: Ed25519";
-  #                           echo "Key-Usage: cert";
-  #                           echo "Subkey-Type: ecdh";
-  #                           echo "Subkey-Curve: Curve25519";
-  #                           echo "Subkey-Usage: encrypt";
-  #                           echo "Name-Real: tionis@$NODE_NAME";
-  #                           echo "Name-Email: $NODE_NAME@tionis.dev";
-  #                           echo "Name-Comment: semi-trusted on-machine key for $NODE_NAME";
-  #                           echo "Expire-Date: 0";
-  #                           echo "Passphrase: $passphrase";
-  #                           echo "%commit";)
-  #   echo -e "11\nA\nQ\n1\n0\ny\ny\nsave\n" | gpg --command-fd 0 --expert --edit-key "<$NODE_NAME@tionis.dev>" addkey || true
-  #   if ! gpg --list-keys "$MAIN_GPG_KEY" >/dev/null 2>&1; then
-  #     gpg --recv-keys "$MAIN_GPG_KEY" # import main gpg key and mark it as ultimate trust
-  #     echo -e "5\ny\n" | gpg --command-fd 0 --expert --edit-key "$MAIN_GPG_KEY" trust
-  #   fi
-  #   gpg --default-key $MAIN_GPG_KEY --sign-key "<$NODE_NAME@tionis.dev>"
-  #   printf "%s\n%s" "$(cfg_gpg_get-auth-keygrip "$MAIN_GPG_KEY")" "$(cfg_gpg_get-auth-keygrip "<$NODE_NAME@tionis.dev>")" > ~/.gnupg/sshcontrol
-  # fi
+cfg_utils() {
+	case "${1:-help}" in
+	use-deploy-key)
+		shift || true
+		cfg_use_deploy_key "$@"
+		;;
+	#fetch-main-gpg-key)
+	#		gpg --recv-keys "$MAIN_GPG_KEY"
+	#		;;
+	update_embedded)
+		for file in "$STORE_ROOT_DIR/cfg/embedded_deps/"*; do
+			run "$file"
+		done
+		;;
+	ssh:add-keys)
+		ssh:add-keys
+		;;
+	ssh:cert:time_remaining)
+		shift || true
+		ssh:cert:time_remaining "$1"
+		;;
+	help)
+		echo "Available commands:"
+		#echo "  fetch-main-gpg-key"
+		echo "  update_embedded - update the embedded dependencies using scripts in store (u/cfg/embedded_deps/*)"
+		;;
+	*)
+		echo "Unknown subcommand"
+		exit 1
+		;;
+	esac
 }
 
-cfg_utils(){
-  case "${1:-help}" in
-    use-deploy-key)
-      shift || true
-      cfg_use_deploy_key "$@";;
-    fetch-main-gpg-key)
-      gpg --recv-keys "$MAIN_GPG_KEY";;
-    update_embedded)
-      for file in "$STORE_ROOT_DIR/cfg/embedded_deps/"*; do
-        run "$file"
-      done;;
-    ssh:add-keys)
-      ssh:add-keys;;
-    ssh:cert:time_remaining)
-      shift || true
-      ssh:cert:time_remaining "$1";;
-    help)
-      echo "Available commands:"
-      echo "  fetch-main-gpg-key"
-      echo "  update_embedded - update the embedded dependencies using scripts in store (cfg/embedded_deps/*)"
-      ;;
-    *)
-      echo "Unknown subcommand"
-      exit 1;;
-  esac
+##################################### Fix ###################################
+cfg_fix() {
+	case "${1:-help}" in
+	help)
+		echo "Available commands:"
+		echo "  git-crypt - fix git-crypt when using multiple worktrees (used for waterfall branches)"
+		;;
+	git-crypt)
+		# https://github.com/AGWA/git-crypt/issues/105
+		for worktree_dir in ~/.cfg/worktrees/*; do
+			ln -sr ~/.cfg/git-crypt "$worktree_dir/.git-crypt"
+		done
+		;;
+	*)
+		echo "Unknown subcommand"
+		exit 1
+		;;
+	esac
 }
-
 
 #################################### Main ###################################
-cfg:main(){
-  if cfg:git config core.sshCommand >/dev/null; then
-    SSH_AUTH_SOCK=""
-    export SSH_AUTH_SOCK
-  fi
-  case "${1:-help}" in
-    git)
-      shift || true
-      cfg:git "$@";;
-    apply|apply-commit)
-      shift
-      apply-commit "$@";;
-    sync)
-      cfg_sync "$@";;
-    cache)
-      shift || true
-      cfg_cache "$@";;
-    vars)
-      shift || true
-      cfg_vars "$@";;
-    store)
-      shift || true
-      cfg_store "$@";;
-    ssh)
-      shift || true
-      cfg_ssh "$@";;
-    setup)
-      shift || true
-      cfg_setup "$@";;
-    help)
-      echo "Available commands:"
-      echo "  prompt ... - config status prompt for shell"
-      echo "  cache ... - a key value store local to this machine"
-      echo "  store ... - a key value store shared between all nodes"
-      echo "  vars ... - manage universal env vars"
-      echo "  ssh ... - manage ssh auth to this node"
-      echo "  apply \$OPT_COMMIT \$OPT_UPSTREAM_TARGET_BRANCH - apply (cherry-pick) last commit backwards to upstream branches"
-      echo "  todo - list todos"
-      echo "  prompt - get a line for your shell prompt, please note that this is only for demonstation, shell inline code will run faster"
-      echo "  help - show this help"
-      ;;
-    prompt)
-      changes="$(git "--git-dir=$HOME/.cfg" "--work-tree=$HOME" status --short | wc -l)"
-      if test "$changes" -gt 0; then
-        printf "\x1b[31m%d uncommited changes \x1b[37m" "$changes"
-      else
-        printf ""
-      fi
-      # if test -f "$cert_path"; then
-      #   remaining_secs="$(ssh:cert:time_remaining "$cert_path")"
-      #   if [[ "$remaining_secs" -lt 0 ]]; then
-      #     printf "\x1b[31mCertificate expired! \x1b[37m"
-      #   elif [[ "$remaining_secs" -lt 43200 ]]; then
-      #     printf "\x1b[31mCertificate expires in %s \x1b[37m" "$(date -d "@$remaining_secs" -u +%H:%M:%S)"
-      #   fi
-      # fi
-      ;;
-    utils)
-      shift || true
-      cfg_utils "$@";;
-    todo)
-      cd && cfg:git grep "# TODO";;
-    *)
-      cfg:git "$@";;
-  esac
+cfg:setup_ssh_env() {
+	if cfg:git config core.sshCommand >/dev/null; then
+		SSH_AUTH_SOCK=""
+		export SSH_AUTH_SOCK
+	fi
+}
+
+cfg:main() {
+	case "${1:-help}" in
+	git)
+		cfg:setup_ssh_env
+		shift || true
+		cfg:git "$@"
+		;;
+	apply | apply-commit)
+		cfg:setup_ssh_env
+		shift
+		apply-commit "$@"
+		;;
+	sync)
+		cfg:setup_ssh_env
+		cfg_sync "$@"
+		;;
+	cache)
+		shift || true
+		cfg_cache "$@"
+		;;
+	vars)
+		shift || true
+		cfg_vars "$@"
+		;;
+	store)
+		shift || true
+		cfg_store "$@"
+		;;
+	ssh)
+		cfg:setup_ssh_env
+		shift || true
+		cfg_ssh "$@"
+		;;
+	setup)
+		cfg:setup_ssh_env
+		shift || true
+		cfg_setup "$@"
+		;;
+	fix)
+		cfg:setup_ssh_env
+		shift || true
+		cfg_fix "$@"
+		;;
+	help)
+		echo "Available commands:"
+		echo "  prompt ... - config status prompt for shell"
+		echo "  cache ... - a key value store local to this machine"
+		echo "  store ... - a key value store shared between all nodes"
+		echo "  vars ... - manage universal env vars"
+		echo "  ssh ... - manage ssh auth to this node"
+		echo "  apply \$OPT_COMMIT \$OPT_UPSTREAM_TARGET_BRANCH - apply (cherry-pick) last commit backwards to upstream branches"
+		echo "  todo - list todos"
+		echo "  prompt - get a line for your shell prompt, please note that this is only for demonstation, shell inline code will run faster"
+		echo "  fix - different fixes"
+		echo "  help - show this help"
+		;;
+	prompt)
+		changes="$(git "--git-dir=$HOME/.cfg" "--work-tree=$HOME" status --short | wc -l)"
+		if test "$changes" -gt 0; then
+			printf "\x1b[31m%d uncommited changes \x1b[37m" "$changes"
+		else
+			printf ""
+		fi
+		# if test -f "$cert_path"; then
+		#   remaining_secs="$(ssh:cert:time_remaining "$cert_path")"
+		#   if [[ "$remaining_secs" -lt 0 ]]; then
+		#     printf "\x1b[31mCertificate expired! \x1b[37m"
+		#   elif [[ "$remaining_secs" -lt 43200 ]]; then
+		#     printf "\x1b[31mCertificate expires in %s \x1b[37m" "$(date -d "@$remaining_secs" -u +%H:%M:%S)"
+		#   fi
+		# fi
+		;;
+	utils)
+		shift || true
+		cfg_utils "$@"
+		;;
+	todo)
+		cd && cfg:git grep "# TODO"
+		;;
+	*)
+		cfg:git "$@"
+		;;
+	esac
 }
 if [[ $- != *i* ]]; then
-  cfg:main "$@"
+	cfg:main "$@"
 fi

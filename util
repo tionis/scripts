@@ -96,7 +96,6 @@ util:notify() {
 		"https://api.telegram.org/bot$(cfg store get telegram/tasadarBot/token)/sendMessage"
 }
 
-
 # shellcheck disable=SC2016
 util__jq_urlparse='def urldecode:
   # urldecode courtesy of: https://gist.github.com/jcracknell/52cf4e0f8c4518a853784638db8a258d
@@ -129,104 +128,138 @@ def urlparse:
 
 util:desc url/ "URL utilities"
 util:desc url/parse "Parse a URL"
-util:url/parse(){
-  local URI output
-  output="json"
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      -h|--help)
-        echo "Usage: url parse [options] <URI>"
-        echo "Options:"
-        echo "  -f, --format <format>  Output format (default: json)"
-        echo "               Available formats: json, bash, sh"
-        return 0
-        ;;
-      -f|--format)
-        output="$2"
-        shift
-        ;;
-      *)
-        URI="$1"
-        ;;
-    esac
-    shift
-  done
-  parsed="$(echo "$URI" | jq -R "$util__jq_urlparse"urlparse)"
-  case "$output" in
-    json)
-      echo "$parsed"
-      ;;
-    bash|sh)
-      scheme="$(echo "$parsed" | jq -r '.scheme')"
-      authority="$(echo "$parsed" | jq -r '.authority')"
-      domain="$(echo "$parsed" | jq -r '.domain')"
-      port="$(echo "$parsed" | jq -r '.port')"
-      path="$(echo "$parsed" | jq -r '.path')"
-      declare -A query
-      while IFS= read -r -d '' key; do
-        value="$(echo "$parsed" | jq -r ".query[\"$key\"]")"
-        query["$key"]="$value"
-      done < <(echo "$parsed" | jq -r '.query | keys[]' | tr '\n' '\0')
-      fragment="$(echo "$parsed" | jq -r '.fragment')"
-      case "$output" in
-        bash)
-          echo "scheme=\"$scheme\""
-          echo "authority=\"$authority\""
-          echo "domain=\"$domain\""
-          echo "port=\"$port\""
-          echo "path=\"$path\""
-          for key in "${!query[@]}"; do
-            echo "query[\"$key\"]=\"${query[$key]}\""
-          done
-          echo "fragment=\"$fragment\""
-          ;;
-        sh)
-          echo "export scheme=\"$scheme\""
-          echo "export authority=\"$authority\""
-          echo "export domain=\"$domain\""
-          echo "export port=\"$port\""
-          echo "export path=\"$path\""
-          for key in "${!query[@]}"; do
-            echo "export query_$key=\"${query[$key]}\""
-          done
-          echo "export fragment=\"$fragment\""
-          ;;
-      esac;;
-    *)
-      error "Unknown output format: $output"
-      ;;
-  esac
+util:url/parse() {
+	local URI output
+	output="json"
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		-h | --help)
+			echo "Usage: url parse [options] <URI>"
+			echo "Options:"
+			echo "  -f, --format <format>  Output format (default: json)"
+			echo "               Available formats: json, bash, sh"
+			return 0
+			;;
+		-f | --format)
+			output="$2"
+			shift
+			;;
+		*)
+			URI="$1"
+			;;
+		esac
+		shift
+	done
+	parsed="$(echo "$URI" | jq -R "$util__jq_urlparse"urlparse)"
+	case "$output" in
+	json)
+		echo "$parsed"
+		;;
+	bash | sh)
+		scheme="$(echo "$parsed" | jq -r '.scheme')"
+		authority="$(echo "$parsed" | jq -r '.authority')"
+		domain="$(echo "$parsed" | jq -r '.domain')"
+		port="$(echo "$parsed" | jq -r '.port')"
+		path="$(echo "$parsed" | jq -r '.path')"
+		declare -A query
+		while IFS= read -r -d '' key; do
+			value="$(echo "$parsed" | jq -r ".query[\"$key\"]")"
+			query["$key"]="$value"
+		done < <(echo "$parsed" | jq -r '.query | keys[]' | tr '\n' '\0')
+		fragment="$(echo "$parsed" | jq -r '.fragment')"
+		case "$output" in
+		bash)
+			echo "scheme=\"$scheme\""
+			echo "authority=\"$authority\""
+			echo "domain=\"$domain\""
+			echo "port=\"$port\""
+			echo "path=\"$path\""
+			for key in "${!query[@]}"; do
+				echo "query[\"$key\"]=\"${query[$key]}\""
+			done
+			echo "fragment=\"$fragment\""
+			;;
+		sh)
+			echo "export scheme=\"$scheme\""
+			echo "export authority=\"$authority\""
+			echo "export domain=\"$domain\""
+			echo "export port=\"$port\""
+			echo "export path=\"$path\""
+			for key in "${!query[@]}"; do
+				echo "export query_$key=\"${query[$key]}\""
+			done
+			echo "export fragment=\"$fragment\""
+			;;
+		esac
+		;;
+	*)
+		error "Unknown output format: $output"
+		;;
+	esac
 }
 
-util__web_host_index_page='<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="X-UA-Compatible" content="ie=edge">
-    <title>Web Utils</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
-  </head>
-  <body>
-    <h1>Web Utils</h1>
-  </body>
-</html>'
-# TODO: Add more utilities to the index page (e.g. file upload for pdf shrinking and qr code generator)
-
-util:web/host/landing_page(){
-	info "Starting web host landing page"
-	while true; do
-		printf "%s" "$util__web_host_index_page" | curl -v -X POST --data @- -H "Content-Type: text/html" "$base_url"
+util:desc hashpipe "Only forward the output of a command if it matches the hash"
+util:hashpipe() {
+	local hash
+	local hash_type="sha256"
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		-h | --help)
+			echo "Usage: util hashpipe [options] <command> <hash>"
+			echo "Only forward the output of a command if it matches the hash"
+			echo "Options:"
+			echo "  -h, --help: Show this help message"
+			echo "  -t, --type <type>: Hash type (default: sha256)"
+			return 0
+			;;
+		-t | --type)
+			hash_type="$2"
+			shift
+			;;
+		*)
+			command="$1"
+			hash="$2"
+			;;
+		esac
+		shift
 	done
+	temp_file="$(mktemp)"
+	cat >"$temp_file"
+	local stream_hash
+	case "$hash_type" in
+	sha256)
+		stream_hash="$(sha256sum "$temp_file" | cut -d' ' -f1)"
+		;;
+	sha1)
+		stream_hash="$(sha1sum "$temp_file" | cut -d' ' -f1)"
+		;;
+	md5)
+		stream_hash="$(md5sum "$temp_file" | cut -d' ' -f1)"
+		;;
+	*)
+		error "Unknown hash type: $hash_type"
+		;;
+	esac
+	if [[ "$stream_hash" == "$hash" ]]; then
+		cat "$temp_file"
+	else
+		error "Hash mismatch: $stream_hash != $hash"
+	fi
 }
 
 util:desc web/ "General web utilities"
-util:desc web/host "Host a web version of some utilities using patchwork server"
-util:web/host(){
-	base_url="${1:-https://patch.tionis.dev/req/$(uuidgen)}"
-	info "Hosting web utilities at $base_url"
-	util:web/host/landing_page &
-	wait
+util:desc web/host "Host a web version of some utilities using tuns proxy"
+util:web/host() {
+	prev_dir="$(pwd)"
+	cd "$HOME/.config/scripts/util.assets/"
+	declare ssh_pid server_pid
+	ssh -R util:80:localhost:7589 tuns.sh &
+	ssh_pid=$!
+	python3 -m http.server --bind localhost --cgi 7589
+	server_pid=$!
+	wait "$server_pid" || true
+	kill "$ssh_pid"
+	cd "$prev_dir"
 }
 
 util:desc web/mirror "Mirror a website"
@@ -679,6 +712,7 @@ util:extract() {
 	if [ -f "$1" ]; then
 		case "$1" in
 		*.tar.bz2) tar xvjf "$1" ;;
+		*.tar.xz) tar xvJf "$1" ;;
 		*.tar.gz) tar xvzf "$1" ;;
 		*.bz2) bunzip2 "$1" ;;
 		*.rar) unrar x "$1" ;;
@@ -869,7 +903,7 @@ util:curl/with-timings() {
 util__cachedir_tag_content='Signature: 8a477f597d28d172789f06886806bc55
 # This file is a cache directory tag created by (application name).
 # For information about cache directory tags, see:
-#	https://bford.info/cachedir/'
+#  https://bford.info/cachedir/'
 
 util:desc cachedir.tag "Print the content of a CACHEDIR.TAG file"
 util:cachedir.tag() {
@@ -885,7 +919,7 @@ util:fs/find-illegal() {
 }
 util:desc fs/fix-illegal "Fix illegal characters in filenames (illegal for FAT/Windows)"
 util:fs/fix-illegal() {
-  while IFS=$'\n' read -r file; do
+	while IFS=$'\n' read -r file; do
 		new="${file//[:?*\"\\]/ }"
 		new="${new//</\(}"
 		new="${new//>/\)}"
@@ -901,36 +935,90 @@ util:fs/fix-illegal() {
 				break
 			fi
 		done
-		new="${file:0:${#file} - i}"
+		new="${file:0:${#file}-i}"
 		mv "$file" "$new"
 	done < <(find . -mindepth 1 -type d -regextype posix-extended -regex '.*\.$')
 }
 
-
-
 util:desc urlencode "URL encode a string"
-util:urlencode(){
-  string=$1; format=; set --
-  while
-    literal=${string%%[!-._~0-9A-Za-z]*}
-    case "$literal" in
-      ?*)
-        format=$format%s
-        set -- "$@" "$literal"
-        string=${string#"$literal"};;
-    esac
-    case "$string" in
-      "") false;;
-    esac
-  do
-    tail=${string#?}
-    head=${string%"$tail"}
-    format=$format%%%02x
-    set -- "$@" "'$head"
-    string=$tail
-  done
-  # shellcheck disable=SC2059
-  printf "$format\\n" "$@"
+util:urlencode() {
+	string=$1
+	format=
+	set --
+	while
+		literal=${string%%[!-._~0-9A-Za-z]*}
+		case "$literal" in
+		?*)
+			format=$format%s
+			set -- "$@" "$literal"
+			string=${string#"$literal"}
+			;;
+		esac
+		case "$string" in
+		"") false ;;
+		esac
+	do
+		tail=${string#?}
+		head=${string%"$tail"}
+		format=$format%%%02x
+		set -- "$@" "'$head"
+		string=$tail
+	done
+	# shellcheck disable=SC2059
+	printf "$format\\n" "$@"
+}
+
+util:desc sum "Calculate the sum of a list of numbers"
+util:sum() {
+	awk '{s+=$1} END {print s}'
+}
+
+util:desc uuid "Generate a UUID"
+util:uuid(){
+  while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+			-h | --help)
+				echo "Usage: util uuid [options]"
+				echo "Generate a UUID"
+				echo "Options:"
+				echo "  -h, --help: Show this help message"
+				return 0
+				;;
+		esac
+		shift
+	done
+	if command -v uuidgen &>/dev/null; then
+		uuidgen
+	else
+		cat /proc/sys/kernel/random/uuid
+	fi
+}
+
+util:desc hyperlink "Create a hyperlink by writing a html wrapper"
+util:hyperlink() {
+	local url name
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+			-h | --help)
+				echo "Usage: util hyperlink [options] <url> <name>"
+				echo "Create a hyperlink by writing a html wrapper"
+				echo "Options:"
+				echo "  -h, --help: Show this help message"
+				return 0
+				;;
+			*)
+				url="$1"
+				name="$2"
+				shift
+				;;
+		esac
+		shift
+	done
+	echo "<html>
+<head>
+<meta http-equiv=\"refresh\" content=\"0; url=$url\" />
+</head>
+</html>" >"$name.html"
 }
 
 ######################################### Main #############################################

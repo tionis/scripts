@@ -290,9 +290,6 @@ git-subtrees::push(){
     subtree_branch="$(jq -r '.ref' <<< "$subtree")"
     subtree_squash="$(jq -r '.squash' <<< "$subtree")"
     subtree_rejoin="$(jq -r '.rejoin' <<< "$subtree")"
-    if [[ -n "${subtree_squash:-}" && "$subtree_squash" = "true" ]]; then
-      subtree_push_args+=(--squash)
-    fi
     if [[ -n "${subtree_rejoin:-}" && "$subtree_rejoin" = "true" ]]; then
       subtree_push_args+=(--rejoin)
     fi

@@ -60,6 +60,10 @@ if [[ -n "${cat:-}" ]]; then
     exit 0
   fi
 fi
+# If file_path is symlink, resolve it and rewrite the file_path
+if [[ -L "$file_path" ]]; then
+  file_path="$(readlink -f "$file_path")"
+fi
 if [[ -f "$file_path" ]]; then
   ${EDITOR:-vim} "$file_path"
 else

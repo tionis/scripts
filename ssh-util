@@ -105,45 +105,237 @@ ssh-util() {
 	fi
 }
 
-######################################### Commands ##########################################
+######################################### Ideas #############################################
+# Introduce cert management with some renewal mechanisms
+# renewal mechanosm should work via a cronjob and not depend on the current key being trusted
+# furthermore it should be async as ssh has no intermmediate CAs, which means I have to sign
+# all cert with my yuikey myself
 
-ssh-util::desc sign "Sign a file with a private ssh key"
-ssh-util::sign() { # TODO look over this code again in the future
-	if test -z "$1"; then
-		echo "Specify file to sign!"
-		exit 1
-	fi
-	if test -f ~/.ssh/tpm.pub; then
-		KEY_PATH="$HOME/.ssh/tpm.pub"
-	else
-		KEY_PATH="$HOME/.ssh/id_ed25519.pub"
-	fi
-	if test -z "${SSH_AUTH_SOCK:-}"; then
-		ssh-keygen -Y sign -f "$KEY_PATH" -n file "$@"
-	else
-		if test -n "${SSH_SIGNING_KEY_PATH:-}"; then
-			ssh-keygen -Y sign -f "$SSH_SIGNING_KEY_PATH" -n file "$@"
-		else
-			tmp="$(mktemp --directory)"
-			mkfifo -m 660 -- "$tmp/fifo"
-			ssh-add -L | head -n 1 >"$tmp/fifo" &
-			ssh-keygen -Y sign -f "$tmp/fifo" -n file "$@"
+
+######################################### Helpers ##########################################
+SSH_UTIL__DEFAULT_GPG_KEY=60677752BBD86A715AA57BD9A073EA3B1AC3CA70
+ssh-util::first-that-exists() {
+	for file in "$@"; do
+		if [[ -e "$file" ]]; then
+			echo "$file"
+			return 0
 		fi
+	done
+	echo "[not found]"
+}
+
+ssh-util::join_by() {
+	local d=${1-} f=${2-}
+	if shift 2; then
+		printf %s "$f" "${@/#/$d}"
 	fi
 }
 
-ssh-util::desc verify "Verify a file with a public ssh key"
-ssh-util::verify() { # TODO allowed_signers management missing
-	if test -z "$1"; then
-		echo "Specify file to verify!"
-		exit 1
+ssh-util::regex_escape() {
+	sed 's/[^^]/[&]/g; s/\^/\\^/g' <<<"$1"
+}
+
+######################################### Commands ##########################################
+ssh-util::desc sign/ "SSH Signing operations"
+ssh-util::desc sign/file "Sign a file with a public ssh key"
+ssh-util::sign/file() {
+	local key namespace files
+	namespace="file"
+	files=()
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		--help | -h)
+			echo "Usage: ssh-util sign/file [options] <files>"
+			echo "Options:"
+			echo "  --key <key>, -k <key> Specify the key to use for signing"
+			echo "  --namespace <namespace>, -n <namespace> Namespace for the signature, defaults to '$namespace'"
+			return 0
+			;;
+		--key | -k)
+			key="$2"
+			shift
+			;;
+		--namespace | -n)
+			namespace="$2"
+			shift
+			;;
+		*)
+			files+=("$1")
+			;;
+		esac
+		shift
+	done
+	if [[ -z "${files[*]:-}" ]]; then
+		echo "No files specified"
+		return 1
 	fi
-	if test -f ~/.ssh/tpm.pub; then
-		KEY_PATH="$HOME/.ssh/tpm.pub"
-	else
-		KEY_PATH="$HOME/.ssh/id_ed25519.pub"
+	if [[ -z "${key:-}" ]]; then
+		if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
+			local tmp_dir
+			tmp_dir="$(mktemp -d)"
+			mkfifo "$tmp_dir/fifo"
+			ssh-add -L | head -n 1 >"$tmp_dir/fifo" &
+			for file in "${files[@]}"; do
+				ssh-keygen -Y sign -f "$tmp_dir/fifo" -n "$namespace" "$file"
+			done
+			rm -r "$tmp_dir"
+			return
+		else
+			key="$HOME/.ssh/id_ed25519.pub"
+		fi
 	fi
-	ssh-keygen -Y verify -f "$KEY_PATH" -n file "$@"
+	for file in "${files[@]}"; do
+		ssh-keygen -Y sign -f "$key" -n "$namespace" "$file"
+	done
+}
+
+ssh-util::desc sign/json "Sign a string and output it as json"
+ssh-util::sign/json() {
+	local key namespace
+	namespace="tionis.dev/json-ssh-sig"
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		--help | -h)
+			echo "Usage: ssh-util sign/json [options] <string>"
+			echo "Options:"
+			echo "  --key <key>, -k <key> Specify the key to use for signing"
+			echo "  --namespace <namespace>, -n <namespace> Namespace for the signature, defaults to 'tionis.dev/json-ssh-sig'"
+			return 0
+			;;
+		--key | -k)
+			key="$2"
+			shift
+			;;
+		--namespace | -n)
+			namespace="$2"
+			shift
+			;;
+		*)
+			break
+			;;
+		esac
+		shift
+	done
+	local signed input
+	input="$(cat)"
+	if [[ -z "${key:-}" ]]; then
+		if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
+			local tmp_dir
+			tmp_dir="$(mktemp -d)"
+			mkfifo "$tmp_dir/fifo"
+			ssh-add -L | head -n 1 >"$tmp_dir/fifo" &
+			signed="$(printf "%s" "$input" | ssh-keygen -Y sign -f "$tmp_dir/fifo" -n "$namespace")"
+			rm -r "$tmp_dir"
+		else
+			key="$HOME/.ssh/id_ed25519.pub"
+		fi
+	fi
+	if [[ -z "${signed:-}" ]]; then
+		signed="$(printf "%s" "$input" | ssh-keygen -Y sign -f "$key" -n "$namespace")"
+	fi
+	jq -nSc '{data: $input, signature: $signed}' --arg input "$input" --arg signed "$signed"
+}
+
+ssh-util::desc verify/ "SSH Signature verification operations"
+ssh-util::desc verify/json "verify a signature encoded in json"
+ssh-util::verify/json() {
+	local allowed_signers namespace identity print_data
+	namespace="tionis.dev/json-ssh-sig"
+	allowed_signers="$HOME/.ssh/allowed_signers"
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		--help | -h)
+			echo "Usage: ssh-util verify/json [options]"
+			echo "json object is read from stdin"
+			echo "Options:"
+			echo "  --allowed-signers <path>, -a <path> Path to a file containing allowed signers, defaults to ~/.ssh/allowed_signers"
+			echo "  --identity <identity>, -I <identity> Identity to use for verification"
+			echo "  --namespace <namespace>, -n <namespace> Namespace for the signature, defaults to 'tionis.dev/json-ssh-sig'"
+			echo "  --print, -p Print the data that was signed, if the signature was verified"
+			return 0
+			;;
+		--allowed-signers | -a)
+			allowed_signers="$2"
+			shift
+			;;
+		--identity | -I)
+			identity="$2"
+			shift
+			;;
+		--namespace | -n)
+			namespace="$2"
+			shift
+			;;
+		--print | -p)
+			print_data=true
+			;;
+		*)
+			break
+			;;
+		esac
+		shift
+	done
+	if [[ -z "${identity:-}" ]]; then
+		echo "Identity is required"
+		return 1
+	fi
+
+	local input
+	input="$(cat)"
+	local data signature
+	data="$(jq -r '.data' <<<"$input")"
+	signature="$(jq -r '.signature' <<<"$input")"
+	printf "%s" "$data" | ssh-keygen -Y verify -f "$allowed_signers" -n "$namespace" -s <(echo "$signature") -I "$identity" >&2
+	if [[ -n "${print_data:-}" ]]; then
+		printf "%s" "$data"
+	fi
+}
+
+ssh-util::desc rssh "Create a reverse tunnel to this machine"
+ssh-util::rssh(){
+	SSH_AUTH_SOCK="" # use simple machine key
+	while true; do
+		if command -v entr >/dev/null; then
+			echo "$HOME/.ssh/authorized_keys" | entr -nr ssh -R "${NODE_NAME:-$(hostname)}:22:localhost:22" nue.tuns.sh tcp-alias-allowed-users="$(while IFS=$'\n' read -r pubkey; do ssh-keygen -l -f <(echo "$pubkey"); done < <(< ~/.ssh/authorized_keys grep -v '^#') | grep -oP 'SHA256:[^ ]+' | tr '\n' ',' | sed 's/,$/\n/')"
+		else
+			ssh -R "${NODE_NAME:-$(hostname)}:22:localhost:22" nue.tuns.sh tcp-alias-allowed-users="$(while IFS=$'\n' read -r pubkey; do ssh-keygen -l -f <(echo "$pubkey"); done < <(< ~/.ssh/authorized_keys grep -v '^#') | grep -oP 'SHA256:[^ ]+' | tr '\n' ',' | sed 's/,$/\n/')"
+		fi
+		sleep 5
+	done
+}
+
+ssh-util::desc sshuttle/ "Use sshuttle to create a VPN"
+ssh-util::desc sshuttle/enable "Enable the peudo VPN"
+ssh-util::sshuttle/enable() {
+	local host=citadel
+  while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+		--help | -h)
+			echo "Usage: ssh-util sshuttle/enable [options]"
+			echo "Options:"
+			echo "  --host <host>, -h <host> Specify the host to connect to"
+			return 0
+			;;
+		--host | -h)
+			host="$2"
+			shift
+			;;
+		*)
+			break
+			;;
+		esac
+		shift
+	done
+	sshuttle --dns --daemon "--pidfile=${XDG_CACHE_DIR:-$HOME/.cache}/sshuttle.pid" -r "$host" 0/0
+}
+
+ssh-util::desc sshuttle/disable "Disable the pseudo VPN"
+ssh-util::sshuttle/disable() {
+	#sshuttle --daemon "--pidfile=${XDG_CACHE_DIR:-$HOME/.cache}/sshuttle.pid" --stop
+	if [[ -f "${XDG_CACHE_DIR:-$HOME/.cache}/sshuttle.pid" ]]; then
+		kill "$(cat "${XDG_CACHE_DIR:-$HOME/.cache}/sshuttle.pid")"
+		rm "${XDG_CACHE_DIR:-$HOME/.cache}/sshuttle.pid"
+	fi
 }
 
 ssh-util::desc tpm/setup "Setup a TPM based ssh key"
@@ -222,6 +414,441 @@ ssh-util::fun/telephone() {
 	local pid2=$!
 	trap 'echo "Stopping $pid1 and $pid2 ..."; kill -s INT "$pid1" "$pid2"' INT
 	wait "$pid1" "$pid2"
+}
+
+ssh-util::desc fido/ "FIDO2 operations"
+ssh-util::desc fido/import "Import a FIDO2 key into ssh"
+ssh-util::fido/import() {
+	cd ~/.ssh
+	(
+		umask 066
+		ssh-keygen -K
+	)
+	cd - >/dev/null
+}
+
+ssh-util::desc authorized_keys/ "Manage authorized_keys"
+ssh-util::desc authorized_keys/fetch "Fetch authorized_keys updates"
+ssh-util::authorized_keys/fetch() {
+	local stream=false
+	while [[ "$#" -gt 0 ]]; do
+		case "$1" in
+			--help | -h)
+				echo "Usage: ssh-util authorized_keys/fetch [options]"
+				echo "Options:"
+				echo "  --help, -h Show this help message"
+				echo "  --stream, -s Keep connection active and fetch key updates"
+				;;
+			--stream | -s)
+				stream=true
+				;;
+			*)
+				echo "Unknown option: $1"
+				return 1
+				;;
+		esac
+		shift
+	done
+	# TODO when stream=true, watch ~/.ssh/authorized_nostr_keys for updates and also keep nostr connection active to handle key updates
+	error "Not implemented yet"
+}
+
+ssh-util::desc cert/ "SSH Certificate operations"
+ssh-util::desc cert/info "Get information about a ssh certificate"
+ssh-util::cert/info(){
+	ssh-keygen -L -f "${1:-"$HOME/.ssh/id_ed25519-cert.pub"}" || error "Failed to show certificate information"
+}
+
+ssh-util::desc cert/info "More information about a ssh certificate"
+ssh-util::desc cert/info/get_principals "Get the principals from a ssh certificate"
+ssh-util::cert/info/get_principals() {
+	#ssh-keygen -L -f "${1:-"$HOME/.ssh/id_ed25519-cert.pub"}" | grep 'Principals:' | sed 's/Principals: //g' | tr ',' '\n'
+	while read -r line; do
+		if [[ "$(echo "$line" | awk '{$1=$1;print}')" == "Principals:" ]]; then
+			while read -r line; do
+				if [[ -z "$line" || "$(echo "$line" | awk '{print $1 $2}')" = "CriticalOptions:" ]]; then
+					break
+				fi
+				echo "$line"
+			done
+		fi
+	done
+}
+
+ssh-util::desc cert/sign "Sign a ssh certificate"
+ssh-util::cert/sign(){
+  local LIBYYKCS TIME KEY IDENTIFIER PRINCIPAL_STRING HOST_CERT
+	LIBYKCS=$(ssh-util::first-that-exists "/usr/lib/libykcs11.so" "/opt/local/lib/libykcs11.dylib" "/usr/local/lib/libykcs11.dylib" "/usr/lib/x86_64-linux-gnu/libykcs11.so" "/usr/lib/x86_64-linux-gnu/libykcs11.so")
+	TIME="${TIME:-+1h}"
+	KEY="${KEY:-$HOME/.ssh/id_ed25519.pub}"
+	IDENTIFIER="${IDENTIFIER:-$(hostname --fqdn))}"
+	PRINCIPAL_STRING="${PRINCIPAL_STRING:-}"
+	HOST_CERT="${HOST:-}"
+	while [[ "$#" -gt 0 ]]; do
+		case "${1:-}" in
+		--help)
+			echo "Usage: cert sign [options]"
+			echo "Options:"
+			echo "  --help: show this help message"
+			echo "  -t <time>, --time <time>: validity time of the certificate, default: $TIME"
+			echo "  -p <principal>, --principal <principal>: add principal to principals list"
+			echo "  -P <principals>, --principals <principals>: overwrite the principals list using a comma separated list"
+			echo "  -i <identifier>, --identifier <identifier>: identifier to use for the certificate, defaults to $IDENTIFIER"
+			echo "  -k <key>, --key <key>: key to sign, defaults to ~/.ssh/id_ed25519"
+			echo "  -O <option>, --option <option>: option to add to the cert"
+			echo "  -h, --host: sign a host key instead of a user key"
+			echo "  -o, --output <file>: file to write the certificate to, defaults to <key>-cert.pub, - for stdout"
+			echo "  --libykcs <path>: location of dynamic lib for libykcs11 (for yubikey support), defaults to $LIBYKCS"
+			echo "  -g, --gpg: sign using gpg-agent instead of ssh-agent"
+			echo "  --gpg-key <key>: key to use for gpg-agent, defaults to me@tionis.dev's gpg key"
+			echo "  -y, --yubikey: use yubikey for signing, defaults to not using yubikey"
+			echo "  --allowed_signers <path>: path to a file containing allowed signers, defaults to ~/.ssh/allowed_signers"
+			echo "                            (this is used to find valid CAs to sign with)"
+			echo "  -n, --name <name>: name of the CA to use for signing, defaults to trying all until one signs the cert"
+			;;
+		-g | --gpg)
+			USE_GPG=true
+			shift
+			;;
+		--gpg-key)
+			GPG_SSH_KEY="$2"
+			shift 2
+			;;
+		--libykcs)
+			LIBYKCS="$2"
+			shift 2
+			;;
+		-y | --yubikey)
+			USE_YUBIKEY="$2"
+			shift
+			;;
+		--allowed_signers)
+			ALLOWED_SIGNERS="$2"
+			shift 2
+			;;
+		-n | --name)
+			CA_NAME="$2"
+			shift 2
+			;;
+		-t | --time)
+			TIME="$2"
+			shift 2
+			;;
+		-p | --principal)
+			PRINCIPALS+=("$2")
+			shift 2
+			;;
+		-P | --principals)
+			PRINCIPAL_STRING="$2"
+			shift 2
+			;;
+		-h | --host)
+			HOST_CERT=true
+			shift
+			;;
+		-i | --identifier)
+			IDENTIFIER="$2"
+			shift 2
+			;;
+		-k | --key)
+			KEY="$2"
+			shift 2
+			;;
+		-O | --option)
+			OPTIONS+=("$2")
+			shift 2
+			;;
+		-o | --output)
+			OUTPUT="$2"
+			shift 2
+			;;
+		*)
+			error "Unknown option: $1"
+			;;
+		esac
+	done
+	# CREATE OPTIONS
+	local opt_args=()
+	for opt in "${OPTIONS[@]}"; do
+		opt_args+=("-O" "$opt")
+	done
+	if [[ -z "${PRINCIPAL_STRING:-}" ]]; then
+		PRINCIPAL_STRING="$(ssh-util::join_by , "${PRINCIPALS[@]}")"
+	fi
+	if [[ "$KEY" == "-" ]]; then
+		tmp_dir="${tmp_dir:-$(mktemp -d)}"
+		KEY="$tmp_dir/key.pub"
+		cat >"$KEY"
+	fi
+	if [[ -n "${OUTPUT:-}" ]]; then
+		tmp_dir="${tmp_dir:-$(mktemp -d)}"
+		if [[ "$KEY" != "$tmp_dir/key.pub" ]]; then
+			cp "$KEY" "$tmp_dir/key.pub"
+		fi
+		KEY="$tmp_dir/key.pub"
+	fi
+	keygen_args=()
+	if [[ -n "${HOST_CERT:-}" ]]; then
+		keygen_args+=("-h")
+	fi
+	keygen_args+=("-I" "$IDENTIFIER" "-n" "$PRINCIPAL_STRING" "-V" "$TIME" "${opt_args[@]}" "$KEY")
+	if [[ -n "${USE_GPG:-}" ]]; then
+		OLD_SSH_AUTH_SOCK="$SSH_AUTH_SOCK"
+		if command -v okc-ssh-agent >/dev/null; then
+			eval "$(okc-ssh-agent)" >/dev/null
+			KILL_AGENT=true
+		else
+			if ! gpg --list-keys "$SSH_UTIL__DEFAULT_GPG_KEY" >/dev/null; then
+				gpg --recv-keys "$SSH_UTIL__DEFAULT_GPG_KEY"
+			fi
+			SSH_AUTH_SOCK="$(gpgconf --list-dirs agent-ssh-socket)"
+		fi
+		export SSH_AUTH_SOCK
+		(
+			umask 077
+			ssh-keygen -Us <(echo "${GPG_SSH_KEY:-"$(gpg --export-ssh-key '<me@tionis.dev>')"}") "${keygen_args[@]}"
+		)
+		SSH_AUTH_SOCK="$OLD_SSH_AUTH_SOCK"
+		if [[ -n "${KILL_AGENT:-}" ]]; then
+			kill "$SSH_AGENT_PID"
+		fi
+	elif [[ -n "${USE_YUBIKEY:-}" ]]; then
+		# TODO try all the ca from sigchain
+		if [[ -n "${CA_NAME:-}" ]]; then
+			SAFE_NAME="$(ssh-util::regex_escape "$CA_NAME")"
+			key=$(grep cert-authority <"$ALLOWED_SIGNERS" | awk '{print $(NF-2),$(NF-1),$(NF)}' | grep "$SAFE_NAME\$")
+			if [[ -n "$key" ]]; then
+				(
+					umask 077
+					ssh-keygen -s <(echo "$key") "${keygen_args[@]}"
+				)
+			else
+				error "No valid CA found for $CA_NAME"
+			fi
+		else
+			while read -r line; do
+				(
+					umask 077
+					ssh-keygen -s <(echo "$line") "${keygen_args[@]}"
+				) && return 0
+			done < <(grep cert-authority <"$ALLOWED_SIGNERS" | awk '{print $(NF-2),$(NF-1),$(NF)}')
+		fi
+	else
+		ssh-keygen -Us <(echo "${SSH_AGENT_SSH_KEY:-"$(ssh-add -L | head -n 1)"}") "${keygen_args[@]}"
+	fi
+	if [[ -n "${OUTPUT:-}" ]]; then
+		if [[ "$OUTPUT" == "-" ]]; then
+			cat "$tmp_dir/key-cert.pub"
+			rm -r "$tmp_dir"
+		else
+			cp "$tmp_dir/key-cert.pub" "$OUTPUT"
+			rm -r "$tmp_dir"
+		fi
+	fi
+}
+
+ssh-util::desc cert/info "Get information about a ssh certificate"
+ssh-util::cert/info() {
+	ssh-keygen -L -f "${1:-"$HOME/.ssh/id_ed25519-cert.pub"}" || error "Failed to show certificate information"
+}
+
+ssh-util::desc cert/renew "Renew a ssh certificate"
+ssh-util::cert/renew() {
+	error "Not implemented"
+	# TODO connect this to nostr solution?
+	# or add ssh-cert signer in the cloud?
+	file="$HOME/.ssh/id_ed25519-cert.pub"
+	key_file="$HOME/.ssh/id_ed25519"
+	while [[ "$#" -gt 0 ]]; do
+		case "${1:-}" in
+		-h | --help)
+			echo "Usage: cert renew [options]"
+			echo "Options:"
+			echo "  -c, --cert <cert>: certificate to renew, defaults to ~/.ssh/id_ed25519-cert.pub"
+			echo "  -k, --key <key>: key to sign the certificate with, defaults to ~/.ssh/id_ed25519"
+			echo "  -h, --help: show this help message"
+			echo "  -f, --force: force the renewal of the certificate even if it's expired"
+			return 0
+			;;
+		-f | --force)
+			FORCE=true
+			shift
+			;;
+		-k | --key)
+			key_file="$2"
+			shift 2
+			;;
+		-c | --cert)
+			file="$2"
+			shift 2
+			;;
+		*)
+			error "Unknown option: $1"
+			;;
+		esac
+	done
+	if [[ -z "${file:-}" ]]; then
+		file="$HOME/.ssh/id_ed25519-cert.pub"
+	fi
+	if [[ "$file" == "-" ]]; then
+		file="$(mktemp)"
+		cat >"$file"
+	fi
+	cert_info="$(ssh-keygen -L -f "$file")"
+	public_key_handle="$(echo "$cert_info" | grep 'Public key' | grep -oP '(?<=: ).*' | awk '{print $2}')"
+	if [[ "$(ssh-add -l | grep '\-CERT)$' | grep -c "$(regex_escape "$public_key_handle")")" -gt 0 ]]; then
+		info "Certificate is in the ssh-agent, removing it after successful renewal"
+		old_cert="$(cat "$file")"
+	fi
+	key_id="$(echo "$cert_info" | grep 'Key ID' | grep -oP '(?<=: ").*(?=")')"
+	principals=()
+	while IFS=$'\n' read -r principal; do
+		principals+=("$principal")
+	done < <(echo "$cert_info" | ssh-util::cert/info/get_principals)
+	date_line="$(echo "$cert_info" | grep 'Valid: from')"
+	from="$(date "--date=$(echo "$date_line" | grep -oP '(?<=from ).*' | awk '{print $1}')" +%s)"
+	to="$(date "--date=$(echo "$date_line" | grep -oP '(?<=to ).*' | awk '{print $1}')" +%s)"
+	duration="$((to - from))"
+	principal_string="$(join_by , "${principals[@]}")"
+	new_cert="$(cert:sign -P "$principal_string" -i "$key_id" -t "+${duration}s" -k "$key_file" --output -)"
+	echo "$new_cert" >"$file"
+	if [[ -n "${old_cert:-}" ]]; then
+		info "Removing old certificate from ssh-agent"
+		if echo "$old_cert" | ssh-add -d -; then
+			success "Successfully removed old certificate from ssh-agent"
+			ssh-add
+		else
+			warning "Failed to remove old certificate from ssh-agent"
+		fi
+	fi
+	if [[ "$file" == "-" ]]; then
+		cat "$file"
+		rm "$file"
+	fi
+}
+
+ssh-util::desc cert/is-expired "Check if a ssh certificate is expired"
+ssh-util::cert/is-expired() {
+	file="$HOME/.ssh/id_ed25519-cert.pub"
+	ttl=0
+	while [[ "$#" -gt 0 ]]; do
+		case "${1:-}" in
+		-h | --help)
+			echo "Usage: cert is-expired [options] [cert-file]"
+			echo "cert-file defaults to ~/.ssh/id_ed25519-cert.pub"
+			echo "Options:"
+			echo "  -h, --help: show this help message"
+			echo "  -t, --ttl <seconds>: treshold for when to renew the certificate, defaults to $ttl"
+			return 0
+			;;
+		-t | --ttl)
+			ttl="$2"
+			shift 2
+			;;
+		*)
+			file="$1"
+			shift
+			;;
+		esac
+	done
+	expire_secs="$(date --date "$(ssh-keygen -L -f "$file" | grep 'Valid: from' | grep -oP '(?<= to ).*$')" +%s)"
+	now_secs="$(date +%s)"
+	if [[ $((expire_secs - now_secs)) -lt $ttl ]]; then
+		return 0
+	else
+		return 1
+	fi
+}
+
+ssh-util::desc cert/verify "Verify a ssh certificate"
+ssh-util::cert/verify(){
+	while [[ "$#" -gt 0 ]]; do
+		case "${1:-}" in
+		-h | --help)
+			echo "Usage: cert is-expired [options] [cert-file]"
+			echo "cert-file defaults to ~/.ssh/id_ed25519-cert.pub"
+			echo "Options:"
+			echo "  -h, --help: show this help message"
+			echo "  -t, --ttl <seconds>: treshold for when to renew the certificate, defaults to 0"
+			return 0
+			;;
+		-t | --ttl)
+			ttl="$2"
+			shift 2
+			;;
+		*)
+			file="$1"
+			shift
+			;;
+		esac
+	done
+	expire_secs="$(date --date "$(ssh-keygen -L -f "$file" | grep 'Valid: from' | grep -oP '(?<= to ).*$')" +%s)"
+	now_secs="$(date +%s)"
+	if [[ $((expire_secs - now_secs)) -lt $ttl ]]; then
+		return 0
+	else
+		return 1
+	fi
+}
+
+ssh-util::desc cert/clipboard "Sign cert in clipboard"
+ssh-util::cert/clipboard(){
+	while [[ "$#" -gt 0 ]]; do
+		case "${1:-}" in
+		-h | --help)
+			echo "Usage: cert clipboard [options]"
+			echo "Options:"
+			echo "  -h, --help: show this help message"
+			return 0
+			;;
+		*)
+			error "Unknown option: $1"
+			;;
+		esac
+	done
+	vis-clipboard --paste | ssh:cert -g sign -k - -o - "$@" | vis-clipboard --copy
+}
+
+ssh-util::desc cert/renew-if-expired "Renew a ssh certificate if it is expired"
+ssh-util::cert/renew-if-expired() {
+	file="$HOME/.ssh/id_ed25519-cert.pub"
+	ttl=0
+	while [[ "$#" -gt 0 ]]; do
+		case "${1:-}" in
+		-h | --help)
+			echo "Usage: cert renew-if-expired [options] [cert-file]"
+			echo "cert-file defaults to $file"
+			echo "setting cert-file to - will read from stdin and write to stdout"
+			echo "Options:"
+			echo "  -h, --help: show this help message"
+			echo "  -f, --force: force the renewal of the certificate even if it's expired"
+			echo "  -t, --ttl <seconds>: treshold for when to renew the certificate, defaults to $ttl"
+			return 0
+			;;
+		-f | --force)
+			FORCE=true
+			shift
+			;;
+		-t | --ttl)
+			ttl="$2"
+			shift 2
+			;;
+		*)
+			error "Unknown option: $1"
+			;;
+		esac
+	done
+	if [[ "$file" == "-" ]]; then
+		file="$(mktemp)"
+		cat >"$file"
+	fi
+	if ssh-util::cert/is-expired --ttl "$ttl" "$file"; then
+		ssh-util::cert/renew "$file"
+		if [[ "$file" == "-" ]]; then
+			cat "$file"
+			rm "$file"
+		fi
+	fi
 }
 
 # Run main if not sourced
