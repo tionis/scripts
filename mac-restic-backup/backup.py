@@ -17,8 +17,9 @@ import os
 import socket
 import boto3
 import re
+import shutil
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
 # --- Configuration ---
@@ -31,6 +32,9 @@ LOCAL_LOG_FILE = "/tmp/restic_backup.log"
 
 HOSTNAME = socket.gethostname()
 LOGS_PREFIX = f"logs/{HOSTNAME}"
+
+# ANSI Escape Code to Clear to End of Line
+CLEAR_EOL = "\033[K"
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -95,11 +99,16 @@ def upload_log_to_s3(content, status_tag, bucket_name, endpoint_url):
     except Exception as e:
         logging.error(f"S3 Upload Failed: {e}")
 
+# --- Helper: Format Seconds ---
+def format_eta(seconds):
+    if seconds is None: return "--:--"
+    return str(timedelta(seconds=int(seconds)))
+
 # --- NEW: Live Progress Monitoring ---
 def monitor_process(cmd, env):
     """
     Runs the command, streams output live to console (if interactive),
-    and filters logs for S3 (removing noisy progress updates).
+    and filters logs for S3.
     """
     process = subprocess.Popen(
         cmd, 
@@ -107,13 +116,14 @@ def monitor_process(cmd, env):
         stderr=subprocess.STDOUT, 
         text=True, 
         env=env,
-        bufsize=1 # Line buffered
+        bufsize=1 
     )
 
     captured_logs = []
     is_interactive = sys.stdout.isatty()
+    
+    term_width = shutil.get_terminal_size((80, 20)).columns if is_interactive else 80
 
-    # Iterate over stdout line by line
     for line in process.stdout:
         line = line.strip()
         if not line: continue
@@ -122,29 +132,43 @@ def monitor_process(cmd, env):
             data = json.loads(line)
             msg_type = data.get("message_type")
 
-            # 1. Handle Progress Updates (type: status)
+            # 1. Handle Progress Updates
             if msg_type == "status":
-                # Only show in terminal, DO NOT save to log buffer
                 if is_interactive:
                     percent = data.get("percent_done", 0.0) * 100
-                    seconds = data.get("seconds_remaining", 0)
-                    files = data.get("total_files", 0)
-                    # Overwrite the current line with \r
-                    sys.stdout.write(f"\rProgress: [{percent:5.1f}%] {files} files... ETA: {seconds}s")
+                    seconds_rem = data.get("seconds_remaining")
+                    eta = format_eta(seconds_rem)
+                    
+                    current_files = data.get("current_files", [])
+                    current_file = current_files[0] if current_files else ""
+                    
+                    # Formatting: [ 45.2%] ETA: 00:05:30 | /path/to/file...
+                    prefix = f"[{percent:5.1f}%] ETA: {eta} | "
+                    max_len = term_width - len(prefix) - 2
+                    
+                    if len(current_file) > max_len and max_len > 0:
+                        current_file = "..." + current_file[-(max_len-3):]
+                    
+                    # \r moves to start, content overwrites, CLEAR_EOL wipes the rest
+                    sys.stdout.write(f"\r{prefix}{current_file}{CLEAR_EOL}")
                     sys.stdout.flush()
             
-            # 2. Handle Summary/Errors (type: summary, error, etc.)
+            # 2. Handle Summary/Errors
             else:
-                # Clear progress line if interactive
                 if is_interactive:
-                    sys.stdout.write(f"\r{' '*80}\r") 
-                    print(f"[{msg_type.upper()}] {json.dumps(data)}")
+                    # Wipe the entire progress bar line before printing the status message
+                    sys.stdout.write(f"\r{CLEAR_EOL}") 
+                    
+                    if msg_type == "summary":
+                        print(f"✅ Backup Summary: {data.get('files_new', 0)} new files, {data.get('data_added', 0)/1024/1024:.2f} MB added.")
+                    elif msg_type == 'error':
+                         print(f"❌ Error: {data.get('error', {}).get('message', 'Unknown')}")
+                    else:
+                         print(f"[{msg_type.upper()}] {json.dumps(data)}")
                 
-                # Save to S3 log buffer
                 captured_logs.append(line)
 
         except json.JSONDecodeError:
-            # Handle non-JSON output (usually critical errors from Go runtime)
             if is_interactive: print(line)
             captured_logs.append(line)
 
@@ -163,7 +187,6 @@ def run_backup_logic():
     bucket_name, endpoint_url = parse_repo_config(repo_url)
     start_time = time.time()
     
-    # Setup Log Header
     run_log = [f"Starting backup for host: {HOSTNAME} at {datetime.now()}"]
     if endpoint_url: run_log.append(f"Endpoint: {endpoint_url}")
 
@@ -179,13 +202,11 @@ def run_backup_logic():
 
     env = os.environ.copy()
 
-    # --- Run with Monitoring ---
     if sys.stdout.isatty():
         print(f"🚀 Starting Backup to {bucket_name}...")
 
     return_code, process_logs = monitor_process(cmd, env)
     
-    # Merge logs
     run_log.extend(process_logs)
     duration_ms = int((time.time() - start_time) * 1000)
 
@@ -193,7 +214,7 @@ def run_backup_logic():
         msg = f"Backup Successful. Duration: {duration_ms}ms"
         logging.info(msg)
         run_log.append(msg)
-        if sys.stdout.isatty(): print(f"\n✅ {msg}")
+        if sys.stdout.isatty(): print(f"\n✨ {msg}")
 
         if kuma_url:
             try:
@@ -206,13 +227,12 @@ def run_backup_logic():
         msg = f"Backup Failed. Code: {return_code}"
         logging.error(msg)
         run_log.append(msg)
-        if sys.stdout.isatty(): print(f"\n❌ {msg}")
+        if sys.stdout.isatty(): print(f"\n🔥 {msg}")
         
         upload_log_to_s3("\n".join(run_log), "FAILURE", bucket_name, endpoint_url)
 
 def prevent_sleep_and_run():
     script_path = os.path.abspath(__file__)
-    # We do NOT use capture_output here so stdin/stdout pass through to terminal
     subprocess.run(["/usr/bin/caffeinate", "-ism", "uv", "run", script_path, "--run-logic"])
 
 if __name__ == "__main__":
