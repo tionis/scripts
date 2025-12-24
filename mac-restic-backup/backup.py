@@ -168,6 +168,7 @@ def format_eta(seconds):
 def monitor_process(cmd, env, context="Backup"):
     """
     Generic monitor for both Backup and Prune operations.
+    Handles both JSON objects and JSON lists (common in Prune output).
     """
     process = subprocess.Popen(
         cmd, 
@@ -188,20 +189,38 @@ def monitor_process(cmd, env, context="Backup"):
 
         try:
             data = json.loads(line)
+            
+            # --- FIX: Handle List Output (Restic Prune often returns a list of snapshots) ---
+            if isinstance(data, list):
+                # If it's a list, it's usually the final result of the forget command
+                # containing the 'keep' and 'remove' lists.
+                if is_interactive:
+                    sys.stdout.write(f"\r{CLEAR_EOL}")
+                    # Count stats manually from the list if possible, or just print a generic success
+                    # Restic v0.16+ outputs a list of structs with 'keep' and 'remove' keys
+                    kept_count = sum(len(x.get('keep', [])) for x in data if isinstance(x, dict))
+                    removed_count = sum(len(x.get('remove', [])) for x in data if isinstance(x, dict))
+                    
+                    if kept_count > 0 or removed_count > 0:
+                        print(f"✂️ {context} Complete. Snapshots Kept: {kept_count}, Removed: {removed_count}")
+                    else:
+                        print(f"ℹ️ {context}: Processed snapshot list.")
+                        
+                captured_logs.append(line)
+                continue
+
+            # --- Handle Dictionary Output (Standard Status/Summary) ---
             msg_type = data.get("message_type")
 
             if msg_type == "status":
                 if is_interactive:
                     percent = data.get("percent_done", 0.0) * 100
                     seconds_rem = data.get("seconds_remaining")
-                    
-                    # Prune operations sometimes don't send seconds_remaining
                     eta = format_eta(seconds_rem) if seconds_rem is not None else "??"
                     
                     current_files = data.get("current_files", [])
                     current_file = current_files[0] if current_files else ""
                     
-                    # Context prefix (Backup/Prune)
                     prefix = f"[{context}] [{percent:5.1f}%] ETA: {eta} | "
                     max_len = term_width - len(prefix) - 2
                     
@@ -210,6 +229,7 @@ def monitor_process(cmd, env, context="Backup"):
                     
                     sys.stdout.write(f"\r{prefix}{current_file}{CLEAR_EOL}")
                     sys.stdout.flush()
+            
             else:
                 if is_interactive:
                     sys.stdout.write(f"\r{CLEAR_EOL}") 
@@ -217,13 +237,13 @@ def monitor_process(cmd, env, context="Backup"):
                         # Backup Summary
                         if "data_added" in data:
                             print(f"✅ {context} Summary: {data.get('files_new', 0)} new files, {data.get('data_added', 0)/1024/1024:.2f} MB added.")
-                        # Prune/Forget Summary
+                        # Prune Summary (if it comes as a dict in some versions)
                         elif "keep" in data:
-                            print(f"✂️ {context} Complete. Snapshots Kept: {len(data.get('keep', []))}, Removed: {len(data.get('remove', []))}")
+                             print(f"✂️ {context} Summary. Kept: {len(data.get('keep', []))}, Removed: {len(data.get('remove', []))}")
                     elif msg_type == 'error':
                          print(f"❌ Error: {data.get('error', {}).get('message', 'Unknown')}")
                     else:
-                         # Just print unknown JSON types cleanly
+                         # Ignore unknown message types in console, but log them
                          pass 
                 captured_logs.append(line)
 
