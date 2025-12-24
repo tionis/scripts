@@ -7,7 +7,7 @@ A robust, "deploy-and-forget" backup solution designed for macOS laptops. It use
 * **Power Aware:** Only runs when connected to AC power to preserve battery.
 * **Sleep Prevention:** Uses `caffeinate` to prevent system and disk sleep during backup execution.
 * **Self-Contained:** Uses `uv` and PEP 723 inline dependencies to manage Python environments automatically.
-* **Monitoring:** Pings an **Uptime Kuma** instance with execution duration (ms) upon success.
+* **Monitoring:** Pings a health check URL (e.g., Uptime Kuma) with execution duration (ms) upon success.
 * **Remote Logging:** Uploads run logs (STDOUT/STDERR) to the S3 bucket (`logs/<hostname>/`) for remote troubleshooting.
 * **Invisible:** Runs silently in the background via `launchd`.
 
@@ -23,12 +23,12 @@ The target macOS machine requires:
 ### 1. Place Files
 Deploy the script and plist to the user's local directories.
 
-* **Script:** `~/.local/bin/backup_macos.py`
+* **Script:** `~/.local/bin/backup.py`
 * **LaunchAgent:** `~/Library/LaunchAgents/dev.tionis.scripts.mac-restic-backup.plist`
 
-*Ensure the script is executable (optional with `uv` but good practice):*
+*Ensure the script is executable:*
 ```bash
-chmod +x ~/.local/bin/backup_macos.py
+chmod +x ~/.local/bin/backup.py
 
 ```
 
@@ -55,37 +55,44 @@ __pycache__
 
 ```
 
-**C. Environment & Secrets**
-File: `~/.config/restic/s3.env`
-*Secure this file: `chmod 600 ~/.config/restic/s3.env*`
+**C. Environment Variables (Secrets & Config)**
+File: `~/.config/restic/env`
+*Content: Standard Bash export format. This file is parsed by the script.*
 
-```ini
-AWS_ACCESS_KEY_ID=your_key_id
-AWS_SECRET_ACCESS_KEY=your_secret_key
+```bash
+# Restic Repository Location
+export RESTIC_REPOSITORY="s3://s3.amazonaws.com/your-bucket/macos-repo"
+
+# AWS / S3 Credentials
+export AWS_ACCESS_KEY_ID="your_key_id"
+export AWS_SECRET_ACCESS_KEY="your_secret_key"
+# Optional: Endpoint for non-AWS S3
+# export AWS_ENDPOINT_URL="[https://s3.us-west-1.wasabisys.com](https://s3.us-west-1.wasabisys.com)"
+
+# Healthcheck URL (Duration in ms will be appended to the end)
+export BACKUP_HEALTH_CHECK_URL="https://status.yourdomain.com/api/push/KEY?status=up&msg=OK&ping="
 
 ```
 
-### 3. Customize Script Variables
+*Secure this file:*
 
-Edit the top configuration section of `backup_macos.py` to match your infrastructure:
+```bash
+chmod 600 ~/.config/restic/env
 
-* `REPO_URL`: Your S3 bucket address (e.g., `s3:s3.amazonaws.com/my-backups`).
-* `BUCKET_NAME`: The raw bucket name for log uploading (e.g., `my-backups`).
-* `KUMA_BASE_URL`: Your Uptime Kuma push URL.
+```
 
-### 4. Full Disk Access (Critical)
+### 3. Full Disk Access (Critical)
 
 MacOS requires explicit permission to access user files (Documents, Photos, Mail) and prevent sleep.
 
 1. Open **System Settings** -> **Privacy & Security** -> **Full Disk Access**.
 2. Grant access to:
-* **Terminal** (for the initial run).
 * **Restic binary** (`/opt/homebrew/bin/restic`).
-* **Python/uv** (If execution fails, add `~/.cargo/bin/uv`).
+* **uv** (`~/.local/bin/uv` or `~/.cargo/bin/uv` - highly recommended).
 
 
 
-### 5. Activate Schedule
+### 4. Activate Schedule
 
 Load the LaunchAgent to run hourly.
 
@@ -98,11 +105,11 @@ launchctl load ~/Library/LaunchAgents/dev.tionis.scripts.mac-restic-backup.plist
 
 ### Initial Run
 
-The first backup should be run manually to seed the repository, as it may take longer than a typical "lid-open" session.
+The first backup should be run manually to seed the repository.
 
 ```bash
 # Run with logic flag to trigger the backup immediately
-uv run ~/.local/bin/backup_macos.py --run-logic
+uv run ~/.local/bin/backup.py --run-logic
 
 ```
 
@@ -114,12 +121,10 @@ uv run ~/.local/bin/backup_macos.py --run-logic
 
 ### Remote Troubleshooting
 
-If the Uptime Kuma ping is missing:
-
-1. Check the **S3 Logs** folder first for error messages (Lock exists, Network timeout, etc.).
+1. Check **S3 Logs** for error messages (Lock exists, Network timeout).
 2. SSH into the machine.
-3. Check if the process is stuck: `ps aux | grep restic`.
-4. Unlock repo if needed: `restic unlock --repo ...`
+3. Check if process is stuck: `ps aux | grep restic`.
+4. Unlock repo if needed: `restic unlock` (env vars are automatically loaded if you source the env file: `source ~/.config/restic/env`).
 
 ## License
 
