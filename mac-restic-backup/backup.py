@@ -30,10 +30,12 @@ EXCLUDE_FILE = USER_HOME / ".config/restic/excludes.txt"
 ENV_FILE = USER_HOME / ".config/restic/env"
 LOCAL_LOG_FILE = "/tmp/restic_backup.log"
 
-HOSTNAME = socket.gethostname()
-LOGS_PREFIX = f"logs/{HOSTNAME}"
+# Sanitize Hostname
+RAW_HOSTNAME = socket.gethostname()
+HOSTNAME = re.sub(r'[^a-zA-Z0-9-]', '-', RAW_HOSTNAME)
+LOGS_DIR_NAME = f"logs/{HOSTNAME}"
 
-# ANSI Escape Code to Clear to End of Line
+# ANSI Escape Code
 CLEAR_EOL = "\033[K"
 
 # --- Logging Setup ---
@@ -62,24 +64,54 @@ def load_shell_env(filepath):
                 os.environ[key] = value
 
 def parse_repo_config(repo_url):
-    if not repo_url: return None, None
-    clean_url = repo_url.replace("s3:", "", 1)
+    """
+    Parses Restic S3 URLs to extract Bucket, Endpoint, AND Prefix.
+    Returns: (bucket_name, endpoint_url, repo_prefix)
     
+    Example: s3:host/bucket/repo-mac -> (bucket, https://host, repo-mac)
+    """
+    if not repo_url: return None, None, None
+    
+    clean_url = repo_url.replace("s3:", "", 1)
+    bucket = None
+    endpoint = None
+    prefix = ""
+
+    # 1. Handle http(s):// prefixes explicitly
     if clean_url.startswith("http"):
         parsed = urlparse(clean_url)
         endpoint = f"{parsed.scheme}://{parsed.netloc}"
         path_parts = parsed.path.strip("/").split("/")
-        bucket = path_parts[0] if path_parts else None
-        return bucket, endpoint
+        
+        if path_parts:
+            bucket = path_parts[0]
+            if len(path_parts) > 1:
+                prefix = "/".join(path_parts[1:])
+        return bucket, endpoint, prefix
 
-    if "/" not in clean_url: return clean_url, None
+    # 2. Handle host/bucket/prefix format (Common for MinIO/Hetzner)
+    if "/" in clean_url:
+        parts = clean_url.split("/", 1) # Split Host vs Path
+        host = parts[0]
+        full_path = parts[1] if len(parts) > 1 else ""
+        
+        path_segments = full_path.split("/")
+        if path_segments:
+            bucket = path_segments[0]
+            # Everything after bucket is the prefix
+            if len(path_segments) > 1:
+                prefix = "/".join(path_segments[1:])
+        
+        # Determine Endpoint
+        if "amazonaws.com" in host:
+            endpoint = None
+        else:
+            endpoint = f"https://{host}"
+            
+        return bucket, endpoint, prefix
 
-    parts = clean_url.split("/", 1)
-    host, bucket_path = parts[0], parts[1] if len(parts) > 1 else ""
-    bucket = bucket_path.split("/")[0]
-    
-    if "amazonaws.com" in host: return bucket, None
-    return bucket, f"https://{host}"
+    # 3. Fallback (AWS Alias: s3:bucketname)
+    return clean_url, None, ""
 
 def check_power():
     try:
@@ -88,28 +120,38 @@ def check_power():
     except Exception:
         return False
 
-def upload_log_to_s3(content, status_tag, bucket_name, endpoint_url):
+def upload_log_to_s3(content, status_tag, bucket_name, endpoint_url, repo_prefix):
     if not bucket_name: return
     try:
-        s3 = boto3.client('s3', endpoint_url=endpoint_url)
+        session = boto3.Session(
+            aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+        )
+        
+        s3 = session.client('s3', endpoint_url=endpoint_url)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        filename = f"{LOGS_PREFIX}/{timestamp}_{status_tag}.txt"
-        s3.put_object(Bucket=bucket_name, Key=filename, Body=content, ContentType="text/plain")
-        logging.info(f"Uploaded log to s3://{bucket_name}/{filename}")
+        
+        # Construct Key: prefix/logs/hostname/timestamp.txt
+        # If prefix is empty, it handles it gracefully
+        full_key_path = f"{LOGS_DIR_NAME}/{timestamp}_{status_tag}.txt"
+        if repo_prefix:
+            full_key_path = f"{repo_prefix}/{full_key_path}"
+
+        s3.put_object(
+            Bucket=bucket_name, 
+            Key=full_key_path, 
+            Body=content, 
+            ContentType="text/plain"
+        )
+        logging.info(f"Uploaded log to s3://{bucket_name}/{full_key_path}")
     except Exception as e:
         logging.error(f"S3 Upload Failed: {e}")
 
-# --- Helper: Format Seconds ---
 def format_eta(seconds):
     if seconds is None: return "--:--"
     return str(timedelta(seconds=int(seconds)))
 
-# --- NEW: Live Progress Monitoring ---
 def monitor_process(cmd, env):
-    """
-    Runs the command, streams output live to console (if interactive),
-    and filters logs for S3.
-    """
     process = subprocess.Popen(
         cmd, 
         stdout=subprocess.PIPE, 
@@ -121,7 +163,6 @@ def monitor_process(cmd, env):
 
     captured_logs = []
     is_interactive = sys.stdout.isatty()
-    
     term_width = shutil.get_terminal_size((80, 20)).columns if is_interactive else 80
 
     for line in process.stdout:
@@ -132,7 +173,6 @@ def monitor_process(cmd, env):
             data = json.loads(line)
             msg_type = data.get("message_type")
 
-            # 1. Handle Progress Updates
             if msg_type == "status":
                 if is_interactive:
                     percent = data.get("percent_done", 0.0) * 100
@@ -142,30 +182,23 @@ def monitor_process(cmd, env):
                     current_files = data.get("current_files", [])
                     current_file = current_files[0] if current_files else ""
                     
-                    # Formatting: [ 45.2%] ETA: 00:05:30 | /path/to/file...
                     prefix = f"[{percent:5.1f}%] ETA: {eta} | "
                     max_len = term_width - len(prefix) - 2
                     
                     if len(current_file) > max_len and max_len > 0:
                         current_file = "..." + current_file[-(max_len-3):]
                     
-                    # \r moves to start, content overwrites, CLEAR_EOL wipes the rest
                     sys.stdout.write(f"\r{prefix}{current_file}{CLEAR_EOL}")
                     sys.stdout.flush()
-            
-            # 2. Handle Summary/Errors
             else:
                 if is_interactive:
-                    # Wipe the entire progress bar line before printing the status message
                     sys.stdout.write(f"\r{CLEAR_EOL}") 
-                    
                     if msg_type == "summary":
                         print(f"✅ Backup Summary: {data.get('files_new', 0)} new files, {data.get('data_added', 0)/1024/1024:.2f} MB added.")
                     elif msg_type == 'error':
                          print(f"❌ Error: {data.get('error', {}).get('message', 'Unknown')}")
                     else:
                          print(f"[{msg_type.upper()}] {json.dumps(data)}")
-                
                 captured_logs.append(line)
 
         except json.JSONDecodeError:
@@ -184,11 +217,12 @@ def run_backup_logic():
         logging.error("No RESTIC_REPOSITORY env var found.")
         return
 
-    bucket_name, endpoint_url = parse_repo_config(repo_url)
+    bucket_name, endpoint_url, repo_prefix = parse_repo_config(repo_url)
     start_time = time.time()
     
     run_log = [f"Starting backup for host: {HOSTNAME} at {datetime.now()}"]
     if endpoint_url: run_log.append(f"Endpoint: {endpoint_url}")
+    if repo_prefix: run_log.append(f"Prefix: {repo_prefix}")
 
     cmd = [
         RESTIC_BIN, "backup", str(USER_HOME),
@@ -203,7 +237,7 @@ def run_backup_logic():
     env = os.environ.copy()
 
     if sys.stdout.isatty():
-        print(f"🚀 Starting Backup to {bucket_name}...")
+        print(f"🚀 Starting Backup to {bucket_name}/{repo_prefix if repo_prefix else ''} ...")
 
     return_code, process_logs = monitor_process(cmd, env)
     
@@ -222,14 +256,14 @@ def run_backup_logic():
             except Exception as e:
                 logging.error(f"Kuma Ping Failed: {e}")
 
-        upload_log_to_s3("\n".join(run_log), "SUCCESS", bucket_name, endpoint_url)
+        upload_log_to_s3("\n".join(run_log), "SUCCESS", bucket_name, endpoint_url, repo_prefix)
     else:
         msg = f"Backup Failed. Code: {return_code}"
         logging.error(msg)
         run_log.append(msg)
         if sys.stdout.isatty(): print(f"\n🔥 {msg}")
         
-        upload_log_to_s3("\n".join(run_log), "FAILURE", bucket_name, endpoint_url)
+        upload_log_to_s3("\n".join(run_log), "FAILURE", bucket_name, endpoint_url, repo_prefix)
 
 def prevent_sleep_and_run():
     script_path = os.path.abspath(__file__)
